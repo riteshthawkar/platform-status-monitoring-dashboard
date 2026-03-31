@@ -1,0 +1,44 @@
+{
+  "name": "platform-status-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "check": "tsx src/scripts/cron-checker.ts",
+    "check:once": "tsx src/scripts/cron-checker.ts",
+    "setup:cron": "bash src/scripts/setup-cron.sh",
+    "deploy:setup": "bash deploy/setup.sh",
+    "deploy:update": "bash deploy/update.sh",
+    "deploy:ssl": "bash deploy/setup-ssl.sh"
+  },
+  "dependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "better-sqlite3": "^12.8.0",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^1.7.0",
+    "next": "^16.2.1",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^8.0.4",
+    "postcss": "^8.5.8",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "recharts": "^3.8.1",
+    "tailwindcss": "^4.2.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  },
+  "devDependencies": {
+    "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^7.0.11"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
