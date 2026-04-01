@@ -60,8 +60,8 @@ export default function ServiceCard({ service, onRefresh }: ServiceCardProps) {
                 {service.name}
               </h3>
               {service.tags?.includes("critical") && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-400 font-medium">
-                  CRITICAL
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 font-medium border border-orange-500/20" title="High-priority service — alerts trigger immediately on failure">
+                  HIGH PRIORITY
                 </span>
               )}
             </div>
