@@ -9,6 +9,7 @@
     "lint": "next lint",
     "check": "tsx src/scripts/cron-checker.ts",
     "check:once": "tsx src/scripts/cron-checker.ts",
+    "add-service": "tsx src/scripts/add-service.ts",
     "setup:cron": "bash src/scripts/setup-cron.sh",
     "deploy:setup": "bash deploy/setup.sh",
     "deploy:update": "bash deploy/update.sh",
