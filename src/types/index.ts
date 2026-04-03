@@ -103,3 +103,31 @@ export interface UptimeBar {
   totalChecks: number;
   failedChecks: number;
 }
+
+// ─── Team & Assignments ─────────────────────────────────────
+
+export interface TeamMember {
+  id?: number;
+  name: string;
+  email: string;
+  role: string;
+  createdAt: string;
+}
+
+export type AssignmentStatus = "open" | "in_progress" | "resolved";
+
+export interface IncidentAssignment {
+  id?: number;
+  incidentId: number;
+  assigneeId: number;
+  assigneeName?: string;
+  assigneeEmail?: string;
+  incidentTitle?: string;
+  incidentSeverity?: string;
+  serviceId?: string;
+  notes: string | null;
+  deadline: string | null;
+  status: AssignmentStatus;
+  createdAt: string;
+  updatedAt: string;
+}

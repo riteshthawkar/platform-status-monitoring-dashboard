@@ -546,6 +546,124 @@ export async function processAlertsForResults(
   return { failures, recoveries };
 }
 
+// ─── Assignment Email Notifications ─────────────────────────
+
+export async function sendAssignmentEmail(payload: {
+  toEmail: string;
+  toName: string;
+  incidentId: number;
+  assignmentId: number;
+  notes: string | null;
+  deadline: string | null;
+  type: "assigned" | "deadline_reminder";
+}): Promise<boolean> {
+  const transport = getEmailTransporter();
+  if (!transport) return false;
+
+  const isReminder = payload.type === "deadline_reminder";
+  const deadlineStr = payload.deadline
+    ? new Date(payload.deadline).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })
+    : "No deadline set";
+
+  const subject = isReminder
+    ? `\u23f0 Deadline approaching: Incident #${payload.incidentId} assigned to you`
+    : `\ud83d\udccc Assigned to you: Incident #${payload.incidentId}`;
+
+  const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0; padding:0; background-color:#0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#0f172a; padding:24px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background-color:#1e293b; border-radius:12px; overflow:hidden; border:1px solid #334155;">
+        <tr>
+          <td style="background: linear-gradient(135deg, ${isReminder ? "#f59e0b" : "#6366f1"}, ${isReminder ? "#f59e0b88" : "#6366f188"}); padding:28px 32px;">
+            <h1 style="margin:0; color:#ffffff; font-size:22px; font-weight:700;">
+              ${isReminder ? "\u23f0 Deadline Reminder" : "\ud83d\udccc Incident Assigned"}
+            </h1>
+            <p style="margin:6px 0 0; color:#ffffffcc; font-size:14px;">Platform Status Dashboard</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:28px 32px;">
+            <p style="margin:0 0 16px; color:#e2e8f0; font-size:16px;">
+              Hi <strong>${payload.toName}</strong>,
+            </p>
+            <p style="margin:0 0 24px; color:#cbd5e1; font-size:15px;">
+              ${isReminder
+                ? `The deadline for incident <strong>#${payload.incidentId}</strong> is approaching.`
+                : `You have been assigned to incident <strong>#${payload.incidentId}</strong>.`}
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+              <tr>
+                <td style="padding:12px 0; border-bottom:1px solid #334155;">
+                  <span style="color:#94a3b8; font-size:13px;">Deadline</span><br>
+                  <span style="color:${isReminder ? "#fbbf24" : "#e2e8f0"}; font-size:15px; font-weight:500;">${deadlineStr}</span>
+                </td>
+              </tr>
+              ${payload.notes ? `
+              <tr>
+                <td style="padding:12px 0; border-bottom:1px solid #334155;">
+                  <span style="color:#94a3b8; font-size:13px;">Notes</span><br>
+                  <span style="color:#e2e8f0; font-size:14px;">${payload.notes}</span>
+                </td>
+              </tr>` : ""}
+            </table>
+            <div style="background-color:#1a1a2e; border:1px solid #334155; border-radius:8px; padding:16px; margin-bottom:24px;">
+              <p style="margin:0; color:#a5b4fc; font-size:14px;">
+                ${isReminder
+                  ? "Please update the incident status or resolve it before the deadline."
+                  : "Please investigate this incident and update its status as you make progress."}
+              </p>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color:#0f172a; padding:20px 32px; border-top:1px solid #334155;">
+            <p style="margin:0; color:#64748b; font-size:12px; text-align:center;">
+              Platform Status Dashboard &middot; Assignment Notification
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  const text = [
+    isReminder ? `DEADLINE REMINDER: Incident #${payload.incidentId}` : `ASSIGNED: Incident #${payload.incidentId}`,
+    "",
+    `Hi ${payload.toName},`,
+    "",
+    isReminder
+      ? `The deadline for incident #${payload.incidentId} is approaching.`
+      : `You have been assigned to incident #${payload.incidentId}.`,
+    `Deadline: ${deadlineStr}`,
+    payload.notes ? `Notes: ${payload.notes}` : "",
+    "",
+    "---",
+    "Platform Status Dashboard",
+  ].join("\n");
+
+  try {
+    await transport.sendMail({
+      from: `"Platform Status" <${ALERT_EMAIL_FROM}>`,
+      to: payload.toEmail,
+      subject,
+      text,
+      html,
+    });
+    logAlert("assignment", payload.type, "email", "sent", `${subject} → ${payload.toEmail}`, payload.toEmail);
+    return true;
+  } catch (err) {
+    console.error(`  \u274c Failed to send assignment email: ${err}`);
+    logAlert("assignment", payload.type, "email", "failed", `${subject} → ${payload.toEmail}`, payload.toEmail);
+    return false;
+  }
+}
+
 export function getAlertConfig() {
   return {
     slackConfigured: !!SLACK_WEBHOOK_URL,

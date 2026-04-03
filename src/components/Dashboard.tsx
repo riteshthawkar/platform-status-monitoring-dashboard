@@ -13,7 +13,9 @@ import {
   Search,
   Radio,
   WifiOff,
+  Users,
 } from "lucide-react";
+import Link from "next/link";
 import { categoryLabels, categoryOrder, serviceGroups } from "@/lib/services-config";
 
 type ConnectionMode = "connecting" | "live" | "polling";
@@ -346,6 +348,14 @@ export default function Dashboard() {
             </div>
 
             <div className="flex items-center gap-3">
+              {/* Team page link */}
+              <Link
+                href="/team"
+                className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-colors"
+              >
+                <Users className="w-3 h-3" />
+                Team
+              </Link>
               {/* Connection mode indicator */}
               {connectionMode === "live" ? (
                 <span className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">

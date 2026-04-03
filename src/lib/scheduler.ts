@@ -18,9 +18,9 @@ import {
   getActiveIncidents,
   updateIncident,
   cleanOldChecks,
+  getUpcomingDeadlines,
 } from "./database";
-// NOTE: getUptimePercent is used by eventBus.rebuildDashboardCache() in event-bus.ts
-import { processAlertsForResults, getAlertConfig } from "./alerting";
+import { processAlertsForResults, getAlertConfig, sendAssignmentEmail } from "./alerting";
 import { eventBus } from "./event-bus";
 import { HealthCheckResult, ServiceStatus } from "@/types";
 
@@ -38,6 +38,9 @@ const lastCheckTimes: Map<string, number> = new Map();
 
 /** Tracks consecutive failure count per service for circuit breaker. */
 const consecutiveFailures: Map<string, number> = new Map();
+
+/** Tracks when deadline reminders were last sent (to avoid spam). */
+const deadlineRemindersSent: Map<string, number> = new Map();
 
 /**
  * Run a single round of health checks for services whose interval has elapsed.
@@ -171,6 +174,33 @@ async function runHealthCheckCycle(): Promise<void> {
 
     // Clean old records once per cycle (keeps last 90 days)
     cleanOldChecks(90);
+
+    // Check for approaching deadlines (every cycle, ~1 min)
+    try {
+      const upcoming = getUpcomingDeadlines(2); // within 2 hours
+      for (const assignment of upcoming) {
+        // Only send reminder once per assignment — use cooldown key
+        const cooldownKey = `deadline-reminder-${assignment.id}`;
+        const lastReminder = deadlineRemindersSent.get(cooldownKey);
+        if (!lastReminder || (Date.now() - lastReminder) > 60 * 60 * 1000) { // max once per hour
+          if (assignment.assigneeEmail) {
+            sendAssignmentEmail({
+              toEmail: assignment.assigneeEmail,
+              toName: assignment.assigneeName || "Team Member",
+              incidentId: assignment.incidentId,
+              assignmentId: assignment.id!,
+              notes: assignment.notes,
+              deadline: assignment.deadline,
+              type: "deadline_reminder",
+            }).catch((err) => console.error("[Scheduler] Deadline reminder email failed:", err));
+            deadlineRemindersSent.set(cooldownKey, Date.now());
+            console.log(`[Scheduler] 📧 Deadline reminder sent to ${assignment.assigneeName} for incident #${assignment.incidentId}`);
+          }
+        }
+      }
+    } catch (dlErr) {
+      console.error("[Scheduler] Deadline check error:", dlErr);
+    }
 
     // Rebuild the dashboard cache (used by API routes + SSE)
     // This runs the 153+ SQLite queries once, then all consumers read from cache.

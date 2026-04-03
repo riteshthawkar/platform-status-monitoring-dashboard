@@ -5,7 +5,7 @@
 
 import Database from "better-sqlite3";
 import path from "path";
-import { HealthCheckResult, Incident, IncidentUpdate, UptimeBar } from "@/types";
+import { HealthCheckResult, Incident, IncidentUpdate, UptimeBar, TeamMember, IncidentAssignment, AssignmentStatus } from "@/types";
 
 // Use DATABASE_PATH env var for persistent disk (Render/Railway/Fly.io)
 // Falls back to local ./data/ for development
@@ -101,6 +101,37 @@ function initializeDatabase(db: Database.Database) {
       last_alert_at TEXT NOT NULL,
       alert_type TEXT NOT NULL
     );
+
+    -- Team members
+    CREATE TABLE IF NOT EXISTS team_members (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL DEFAULT 'engineer',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Incident assignments
+    CREATE TABLE IF NOT EXISTS incident_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      incident_id INTEGER NOT NULL REFERENCES incidents(id),
+      assignee_id INTEGER NOT NULL REFERENCES team_members(id),
+      notes TEXT,
+      deadline TEXT,
+      status TEXT NOT NULL DEFAULT 'open'
+        CHECK(status IN ('open', 'in_progress', 'resolved')),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_assignments_incident
+      ON incident_assignments(incident_id);
+
+    CREATE INDEX IF NOT EXISTS idx_assignments_assignee
+      ON incident_assignments(assignee_id, status);
+
+    CREATE INDEX IF NOT EXISTS idx_assignments_deadline
+      ON incident_assignments(deadline);
   `);
 }
 
@@ -448,4 +479,144 @@ export function getAllCooldowns(): CooldownRow[] {
        FROM alert_cooldowns`
     )
     .all() as CooldownRow[];
+}
+
+// ─── Team Member Queries ──────────────────────────────────────
+
+export function createTeamMember(member: { name: string; email: string; role: string }): number {
+  const db = getDb();
+  const result = db
+    .prepare(`INSERT INTO team_members (name, email, role) VALUES (?, ?, ?)`)
+    .run(member.name, member.email, member.role);
+  return result.lastInsertRowid as number;
+}
+
+export function getTeamMembers(): TeamMember[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT id, name, email, role, created_at AS createdAt
+       FROM team_members ORDER BY name ASC`
+    )
+    .all() as TeamMember[];
+}
+
+export function getTeamMemberById(id: number): TeamMember | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT id, name, email, role, created_at AS createdAt
+       FROM team_members WHERE id = ?`
+    )
+    .get(id) as TeamMember | undefined;
+  return row ?? null;
+}
+
+export function updateTeamMember(id: number, updates: { name?: string; email?: string; role?: string }): void {
+  const db = getDb();
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.name) { fields.push("name = ?"); values.push(updates.name); }
+  if (updates.email) { fields.push("email = ?"); values.push(updates.email); }
+  if (updates.role) { fields.push("role = ?"); values.push(updates.role); }
+
+  if (fields.length === 0) return;
+  values.push(id);
+
+  db.prepare(`UPDATE team_members SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+}
+
+export function deleteTeamMember(id: number): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM incident_assignments WHERE assignee_id = ?`).run(id);
+  db.prepare(`DELETE FROM team_members WHERE id = ?`).run(id);
+}
+
+// ─── Incident Assignment Queries ──────────────────────────────
+
+export function createAssignment(assignment: {
+  incidentId: number;
+  assigneeId: number;
+  notes?: string;
+  deadline?: string;
+}): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `INSERT INTO incident_assignments (incident_id, assignee_id, notes, deadline)
+       VALUES (?, ?, ?, ?)`
+    )
+    .run(assignment.incidentId, assignment.assigneeId, assignment.notes ?? null, assignment.deadline ?? null);
+  return result.lastInsertRowid as number;
+}
+
+export function getAssignments(filters?: {
+  assigneeId?: number;
+  incidentId?: number;
+  status?: AssignmentStatus;
+}): IncidentAssignment[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  if (filters?.assigneeId) { conditions.push("a.assignee_id = ?"); values.push(filters.assigneeId); }
+  if (filters?.incidentId) { conditions.push("a.incident_id = ?"); values.push(filters.incidentId); }
+  if (filters?.status) { conditions.push("a.status = ?"); values.push(filters.status); }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  return db
+    .prepare(
+      `SELECT a.id, a.incident_id AS incidentId, a.assignee_id AS assigneeId,
+              t.name AS assigneeName, t.email AS assigneeEmail,
+              i.title AS incidentTitle, i.severity AS incidentSeverity, i.service_id AS serviceId,
+              a.notes, a.deadline, a.status,
+              a.created_at AS createdAt, a.updated_at AS updatedAt
+       FROM incident_assignments a
+       JOIN team_members t ON a.assignee_id = t.id
+       JOIN incidents i ON a.incident_id = i.id
+       ${where}
+       ORDER BY a.deadline ASC NULLS LAST, a.created_at DESC`
+    )
+    .all(...values) as IncidentAssignment[];
+}
+
+export function updateAssignment(id: number, updates: { status?: AssignmentStatus; notes?: string; deadline?: string }): void {
+  const db = getDb();
+  const fields: string[] = ["updated_at = datetime('now')"];
+  const values: unknown[] = [];
+
+  if (updates.status) { fields.push("status = ?"); values.push(updates.status); }
+  if (updates.notes !== undefined) { fields.push("notes = ?"); values.push(updates.notes); }
+  if (updates.deadline !== undefined) { fields.push("deadline = ?"); values.push(updates.deadline); }
+
+  values.push(id);
+  db.prepare(`UPDATE incident_assignments SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+}
+
+export function deleteAssignment(id: number): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM incident_assignments WHERE id = ?`).run(id);
+}
+
+export function getUpcomingDeadlines(withinHours: number = 24): IncidentAssignment[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT a.id, a.incident_id AS incidentId, a.assignee_id AS assigneeId,
+              t.name AS assigneeName, t.email AS assigneeEmail,
+              i.title AS incidentTitle, i.severity AS incidentSeverity, i.service_id AS serviceId,
+              a.notes, a.deadline, a.status,
+              a.created_at AS createdAt, a.updated_at AS updatedAt
+       FROM incident_assignments a
+       JOIN team_members t ON a.assignee_id = t.id
+       JOIN incidents i ON a.incident_id = i.id
+       WHERE a.status != 'resolved'
+         AND a.deadline IS NOT NULL
+         AND a.deadline <= datetime('now', ? || ' hours')
+         AND a.deadline >= datetime('now')
+       ORDER BY a.deadline ASC`
+    )
+    .all(withinHours) as IncidentAssignment[];
 }
