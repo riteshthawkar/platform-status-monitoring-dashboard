@@ -14,22 +14,30 @@ import {
   insertHealthCheck,
   getLatestCheck,
   getRecentChecks,
-  getUptimePercent,
   createIncident,
   getActiveIncidents,
   updateIncident,
   cleanOldChecks,
 } from "./database";
+// NOTE: getUptimePercent is used by eventBus.rebuildDashboardCache() in event-bus.ts
 import { processAlertsForResults, getAlertConfig } from "./alerting";
 import { eventBus } from "./event-bus";
-import { HealthCheckResult, ServiceStatus, ServiceWithStatus } from "@/types";
+import { HealthCheckResult, ServiceStatus } from "@/types";
 
 const CONSECUTIVE_FAILURES_THRESHOLD = 3;
+
+/** After this many consecutive failures, back off to CIRCUIT_BREAKER_INTERVAL_MS */
+const CIRCUIT_BREAKER_THRESHOLD = 5;
+const CIRCUIT_BREAKER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
 let isRunning = false;
 let schedulerStarted = false;
 
 /** Tracks when each service was last checked (epoch ms). */
 const lastCheckTimes: Map<string, number> = new Map();
+
+/** Tracks consecutive failure count per service for circuit breaker. */
+const consecutiveFailures: Map<string, number> = new Map();
 
 /**
  * Run a single round of health checks for services whose interval has elapsed.
@@ -49,20 +57,36 @@ async function runHealthCheckCycle(): Promise<void> {
     const enabledServices = getEnabledServices();
     const now = Date.now();
 
-    // Filter to only services whose check interval has elapsed
+    // Filter to only services whose check interval has elapsed.
+    // Circuit breaker: if a service has failed CIRCUIT_BREAKER_THRESHOLD times
+    // consecutively, slow its check interval to 5 minutes to avoid wasting
+    // resources on persistently down services (each timeout = up to 49 seconds).
+    let circuitBroken = 0;
     const servicesToCheck = enabledServices.filter((service) => {
       const lastCheck = lastCheckTimes.get(service.id) || 0;
-      const intervalMs = (service.checkIntervalSeconds || 120) * 1000;
+      const failures = consecutiveFailures.get(service.id) || 0;
+
+      // Circuit breaker: use slower interval for persistently failing services
+      const isCircuitOpen = failures >= CIRCUIT_BREAKER_THRESHOLD;
+      const intervalMs = isCircuitOpen
+        ? CIRCUIT_BREAKER_INTERVAL_MS
+        : (service.checkIntervalSeconds || 120) * 1000;
+
+      if (isCircuitOpen && (now - lastCheck) < intervalMs) {
+        circuitBroken++;
+      }
+
       return (now - lastCheck) >= intervalMs;
     });
 
-    const skipped = enabledServices.length - servicesToCheck.length;
+    const skipped = enabledServices.length - servicesToCheck.length - circuitBroken;
 
     console.log(
       `\n[Scheduler] ─── Health check cycle started at ${timestamp} ───`
     );
     console.log(
-      `[Scheduler] Checking ${servicesToCheck.length}/${enabledServices.length} services (${skipped} not yet due)`
+      `[Scheduler] Checking ${servicesToCheck.length}/${enabledServices.length} services` +
+      ` (${skipped} not yet due${circuitBroken > 0 ? `, ${circuitBroken} circuit-broken` : ""})`
     );
 
     if (servicesToCheck.length === 0) {
@@ -91,6 +115,22 @@ async function runHealthCheckCycle(): Promise<void> {
 
         // Update last check time for this service
         lastCheckTimes.set(service.id, Date.now());
+
+        // Circuit breaker: track consecutive failures
+        if (result.status === "down" || result.status === "degraded") {
+          const prev = consecutiveFailures.get(service.id) || 0;
+          const newCount = prev + 1;
+          consecutiveFailures.set(service.id, newCount);
+          if (newCount === CIRCUIT_BREAKER_THRESHOLD) {
+            console.log(`[Scheduler] ⚡ CIRCUIT OPEN: ${service.name} — ${newCount} consecutive failures, backing off to 5min intervals`);
+          }
+        } else {
+          // Reset on success
+          if (consecutiveFailures.has(service.id) && consecutiveFailures.get(service.id)! >= CIRCUIT_BREAKER_THRESHOLD) {
+            console.log(`[Scheduler] ⚡ CIRCUIT CLOSED: ${service.name} — recovered, resuming normal interval`);
+          }
+          consecutiveFailures.delete(service.id);
+        }
 
         // Manage incidents
         manageIncidents(service.id, service.name, result);
@@ -132,34 +172,17 @@ async function runHealthCheckCycle(): Promise<void> {
     // Clean old records once per cycle (keeps last 90 days)
     cleanOldChecks(90);
 
-    // Broadcast updated status to all connected SSE clients
-    if (eventBus.connectedClients > 0) {
-      try {
-        const allServices = getEnabledServices();
-        const allIncidents = getActiveIncidents();
-        const servicesWithStatus: ServiceWithStatus[] = allServices.map((service) => {
-          const latest = getLatestCheck(service.id);
-          const recent = getRecentChecks(service.id, 50);
-          const hasMaintenanceIncident = allIncidents.some(
-            (i) => i.serviceId === service.id && i.status === "monitoring"
-          );
-          return {
-            ...service,
-            currentStatus: hasMaintenanceIncident
-              ? "maintenance"
-              : latest?.status ?? "unknown",
-            lastChecked: latest?.timestamp ?? null,
-            lastResponseTime: latest?.responseTimeMs ?? null,
-            uptimePercent24h: getUptimePercent(service.id, 24),
-            uptimePercent7d: getUptimePercent(service.id, 168),
-            uptimePercent30d: getUptimePercent(service.id, 720),
-            recentChecks: recent,
-          };
-        });
-        eventBus.emitStatusUpdate(servicesWithStatus);
-      } catch (emitErr) {
-        console.error("[Scheduler] Failed to emit SSE status update:", emitErr);
+    // Rebuild the dashboard cache (used by API routes + SSE)
+    // This runs the 153+ SQLite queries once, then all consumers read from cache.
+    try {
+      const cached = eventBus.rebuildDashboardCache();
+
+      // Broadcast to connected SSE clients
+      if (eventBus.connectedClients > 0) {
+        eventBus.emitStatusUpdate(cached.services);
       }
+    } catch (emitErr) {
+      console.error("[Scheduler] Failed to rebuild cache / emit SSE update:", emitErr);
     }
   } catch (err) {
     console.error(`[Scheduler] Cycle error: ${err}`);
