@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getAlertConfig, sendAlert, verifyEmailConfig, isEmailConfigured } from "@/lib/alerting";
+import { withAuth } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,7 @@ export async function GET() {
   return NextResponse.json(config);
 }
 
-export async function POST(request: NextRequest) {
+export const POST = withAuth(async function POST(request: NextRequest) {
   try {
     const body = await request.json();
 
@@ -113,4 +114,4 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     return NextResponse.json({ success: false, error: String(error) }, { status: 500 });
   }
-}
+});

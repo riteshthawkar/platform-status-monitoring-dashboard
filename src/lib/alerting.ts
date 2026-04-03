@@ -5,6 +5,13 @@
 
 import { HealthCheckResult, ServiceStatus } from "@/types";
 import { getServiceById } from "./services-config";
+import {
+  logAlert,
+  getCooldown,
+  setCooldown,
+  clearCooldown,
+  getAllCooldowns,
+} from "./database";
 import nodemailer from "nodemailer";
 
 // ─── Config from environment ─────────────────────────────────
@@ -21,20 +28,53 @@ const SMTP_PASS = process.env.SMTP_PASS || "";
 const ALERT_EMAIL_FROM = process.env.ALERT_EMAIL_FROM || SMTP_USER;
 const ALERT_EMAIL_TO = process.env.ALERT_EMAIL_TO || ""; // comma-separated list
 
-// ─── In-memory deduplication (prevents alert spam) ───────────
+// ─── Cooldown tracking (in-memory cache backed by DB) ───────
 
+// In-memory map acts as fast cache; DB is the source of truth
 const lastAlertTimes: Map<string, number> = new Map();
+let cooldownsCacheLoaded = false;
+
+/** Load all cooldowns from DB into the in-memory cache (called once on startup) */
+function loadCooldownsFromDb(): void {
+  if (cooldownsCacheLoaded) return;
+  try {
+    const rows = getAllCooldowns();
+    for (const row of rows) {
+      const ts = new Date(row.lastAlertAt + "Z").getTime(); // DB stores UTC without 'Z'
+      lastAlertTimes.set(row.serviceId, ts);
+    }
+    cooldownsCacheLoaded = true;
+  } catch {
+    // DB may not be ready yet; will retry next call
+  }
+}
 
 function shouldAlert(serviceId: string): boolean {
-  const lastAlert = lastAlertTimes.get(serviceId);
+  loadCooldownsFromDb();
+
   const now = Date.now();
   const cooldownMs = ALERT_COOLDOWN_MINUTES * 60 * 1000;
 
-  if (lastAlert && now - lastAlert < cooldownMs) {
-    return false; // Still in cooldown
+  // Check in-memory cache first (fast path)
+  const cachedTime = lastAlertTimes.get(serviceId);
+  if (cachedTime && now - cachedTime < cooldownMs) {
+    return false; // Still in cooldown per cache
   }
 
+  // Double-check against DB (source of truth)
+  const dbCooldown = getCooldown(serviceId);
+  if (dbCooldown) {
+    const dbTime = new Date(dbCooldown.lastAlertAt + "Z").getTime();
+    if (now - dbTime < cooldownMs) {
+      // Update cache to match DB
+      lastAlertTimes.set(serviceId, dbTime);
+      return false; // Still in cooldown per DB
+    }
+  }
+
+  // Cooldown expired or no previous alert — allow alert
   lastAlertTimes.set(serviceId, now);
+  setCooldown(serviceId, "failure");
   return true;
 }
 
@@ -422,10 +462,17 @@ export async function sendAlert(
     return;
   }
 
-  // Clear cooldown on recovery
+  // Clear cooldown on recovery (both cache and DB)
   if (type === "recovery") {
     lastAlertTimes.delete(check.serviceId);
+    clearCooldown(check.serviceId);
   }
+
+  const alertType = type === "recovery" ? "recovery" : check.status === "degraded" ? "degraded" : "failure";
+  const alertMessage =
+    type === "recovery"
+      ? `RECOVERED: ${serviceName} is back online`
+      : `ALERT: ${serviceName} is ${check.status.toUpperCase()}${check.errorMessage ? ` — ${check.errorMessage}` : ""}`;
 
   const payload = {
     serviceId: check.serviceId,
@@ -438,17 +485,29 @@ export async function sendAlert(
 
   // Always log to console
   consoleAlert(payload);
+  logAlert(check.serviceId, alertType, "console", "sent", alertMessage, null);
 
   // Send to Slack if configured
   if (SLACK_WEBHOOK_URL) {
     const sent = await sendSlackAlert(payload);
-    if (sent) console.log(`  \ud83d\udce4 Slack alert sent for ${serviceName}`);
+    if (sent) {
+      console.log(`  \ud83d\udce4 Slack alert sent for ${serviceName}`);
+      logAlert(check.serviceId, alertType, "slack", "sent", alertMessage, null);
+    } else {
+      logAlert(check.serviceId, alertType, "slack", "failed", alertMessage, null);
+    }
   }
 
   // Send email if configured
   if (isEmailConfigured()) {
+    const recipients = ALERT_EMAIL_TO;
     const sent = await sendEmailAlert(payload);
-    if (sent) console.log(`  \ud83d\udce7 Email alert sent for ${serviceName}`);
+    if (sent) {
+      console.log(`  \ud83d\udce7 Email alert sent for ${serviceName}`);
+      logAlert(check.serviceId, alertType, "email", "sent", alertMessage, recipients);
+    } else {
+      logAlert(check.serviceId, alertType, "email", "failed", alertMessage, recipients);
+    }
   }
 }
 

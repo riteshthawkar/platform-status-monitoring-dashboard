@@ -13,10 +13,11 @@ import {
   getActiveIncidents,
 } from "@/lib/database";
 import { DashboardSummary, ServiceWithStatus, ServiceStatus } from "@/types";
+import { withAuth } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
-export async function POST() {
+export const POST = withAuth(async function POST() {
   try {
     const results = await checkAllServices();
     return NextResponse.json({
@@ -31,7 +32,7 @@ export async function POST() {
       { status: 500 }
     );
   }
-}
+});
 
 export async function GET(request: NextRequest) {
   try {

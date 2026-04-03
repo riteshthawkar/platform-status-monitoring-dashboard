@@ -76,6 +76,31 @@ function initializeDatabase(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_incident_updates_incident
       ON incident_updates(incident_id, created_at DESC);
+
+    -- Alert history: tracks every alert sent
+    CREATE TABLE IF NOT EXISTS alert_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service_id TEXT NOT NULL,
+      alert_type TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      recipients TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_alert_history_service
+      ON alert_history(service_id, created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_alert_history_time
+      ON alert_history(created_at DESC);
+
+    -- Persistent cooldowns: replaces in-memory cooldown map as source of truth
+    CREATE TABLE IF NOT EXISTS alert_cooldowns (
+      service_id TEXT PRIMARY KEY,
+      last_alert_at TEXT NOT NULL,
+      alert_type TEXT NOT NULL
+    );
   `);
 }
 
@@ -264,4 +289,163 @@ export function getIncidentUpdates(incidentId: number): IncidentUpdate[] {
        FROM incident_updates WHERE incident_id = ? ORDER BY created_at DESC`
     )
     .all(incidentId) as IncidentUpdate[];
+}
+
+// ─── Alert History Queries ──────────────────────────────────
+
+export interface AlertHistoryRow {
+  id: number;
+  serviceId: string;
+  alertType: string;
+  channel: string;
+  status: string;
+  message: string | null;
+  recipients: string | null;
+  createdAt: string;
+}
+
+export function logAlert(
+  serviceId: string,
+  alertType: string,
+  channel: string,
+  status: string,
+  message?: string | null,
+  recipients?: string | null
+): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO alert_history (service_id, alert_type, channel, status, message, recipients)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(serviceId, alertType, channel, status, message ?? null, recipients ?? null);
+}
+
+export function getAlertHistory(limit: number = 50, serviceId?: string): AlertHistoryRow[] {
+  const db = getDb();
+  if (serviceId) {
+    return db
+      .prepare(
+        `SELECT id, service_id AS serviceId, alert_type AS alertType, channel, status,
+                message, recipients, created_at AS createdAt
+         FROM alert_history WHERE service_id = ? ORDER BY created_at DESC LIMIT ?`
+      )
+      .all(serviceId, limit) as AlertHistoryRow[];
+  }
+  return db
+    .prepare(
+      `SELECT id, service_id AS serviceId, alert_type AS alertType, channel, status,
+              message, recipients, created_at AS createdAt
+       FROM alert_history ORDER BY created_at DESC LIMIT ?`
+    )
+    .all(limit) as AlertHistoryRow[];
+}
+
+export interface AlertStats {
+  total24h: number;
+  totalFailures24h: number;
+  totalRecoveries24h: number;
+  totalDegraded24h: number;
+  totalFailed24h: number; // send status = 'failed'
+  total7d: number;
+  byChannel: Record<string, number>;
+}
+
+export function getAlertStats(): AlertStats {
+  const db = getDb();
+
+  // Counts for last 24 hours
+  const counts24h = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS total,
+         SUM(CASE WHEN alert_type = 'failure' THEN 1 ELSE 0 END) AS failures,
+         SUM(CASE WHEN alert_type = 'recovery' THEN 1 ELSE 0 END) AS recoveries,
+         SUM(CASE WHEN alert_type = 'degraded' THEN 1 ELSE 0 END) AS degraded,
+         SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS sendFailed
+       FROM alert_history
+       WHERE created_at >= datetime('now', '-1 day')`
+    )
+    .get() as { total: number; failures: number; recoveries: number; degraded: number; sendFailed: number };
+
+  // Total for last 7 days
+  const total7d = db
+    .prepare(
+      `SELECT COUNT(*) AS total FROM alert_history
+       WHERE created_at >= datetime('now', '-7 days')`
+    )
+    .get() as { total: number };
+
+  // By channel in last 24 hours
+  const channelRows = db
+    .prepare(
+      `SELECT channel, COUNT(*) AS cnt
+       FROM alert_history
+       WHERE created_at >= datetime('now', '-1 day')
+       GROUP BY channel`
+    )
+    .all() as Array<{ channel: string; cnt: number }>;
+
+  const byChannel: Record<string, number> = {};
+  for (const row of channelRows) {
+    byChannel[row.channel] = row.cnt;
+  }
+
+  return {
+    total24h: counts24h.total,
+    totalFailures24h: counts24h.failures,
+    totalRecoveries24h: counts24h.recoveries,
+    totalDegraded24h: counts24h.degraded,
+    totalFailed24h: counts24h.sendFailed,
+    total7d: total7d.total,
+    byChannel,
+  };
+}
+
+// ─── Alert Cooldown Queries ─────────────────────────────────
+
+export interface CooldownRow {
+  serviceId: string;
+  lastAlertAt: string;
+  alertType: string;
+}
+
+export function setCooldown(serviceId: string, alertType: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO alert_cooldowns (service_id, last_alert_at, alert_type)
+     VALUES (?, datetime('now'), ?)
+     ON CONFLICT(service_id) DO UPDATE SET last_alert_at = datetime('now'), alert_type = ?`
+  ).run(serviceId, alertType, alertType);
+}
+
+export function getCooldown(serviceId: string): CooldownRow | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT service_id AS serviceId, last_alert_at AS lastAlertAt, alert_type AS alertType
+       FROM alert_cooldowns WHERE service_id = ?`
+    )
+    .get(serviceId) as CooldownRow | undefined;
+  return row ?? null;
+}
+
+export function clearCooldown(serviceId: string): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM alert_cooldowns WHERE service_id = ?`).run(serviceId);
+}
+
+export function cleanExpiredCooldowns(minutes: number): void {
+  const db = getDb();
+  db.prepare(
+    `DELETE FROM alert_cooldowns WHERE last_alert_at < datetime('now', ? || ' minutes')`
+  ).run(-minutes);
+}
+
+export function getAllCooldowns(): CooldownRow[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT service_id AS serviceId, last_alert_at AS lastAlertAt, alert_type AS alertType
+       FROM alert_cooldowns`
+    )
+    .all() as CooldownRow[];
 }

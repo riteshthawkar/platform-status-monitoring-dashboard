@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { ServiceWithStatus, DashboardSummary, Incident } from "@/types";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { ServiceWithStatus, DashboardSummary, Incident, HealthCheckResult } from "@/types";
 import OverallStatus from "./OverallStatus";
 import ServiceCard from "./ServiceCard";
 import IncidentsList from "./IncidentsList";
@@ -11,8 +11,12 @@ import {
   RefreshCw,
   Activity,
   Search,
+  Radio,
+  WifiOff,
 } from "lucide-react";
 import { categoryLabels, categoryOrder, serviceGroups } from "@/lib/services-config";
+
+type ConnectionMode = "connecting" | "live" | "polling";
 
 interface DashboardData {
   summary: DashboardSummary;
@@ -28,6 +32,13 @@ export default function Dashboard() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState("all");
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>("connecting");
+
+  // Refs for SSE reconnection
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const maxReconnectAttempts = 10;
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -47,7 +58,10 @@ export default function Dashboard() {
     setIsChecking(true);
     try {
       await fetch("/api/health-check", { method: "POST" });
-      await fetchStatus();
+      // If not on SSE, fetch manually; SSE will push the update automatically
+      if (connectionMode !== "live") {
+        await fetchStatus();
+      }
     } catch (err) {
       setError(String(err));
     } finally {
@@ -58,21 +72,133 @@ export default function Dashboard() {
   const refreshSingleService = async (serviceId: string) => {
     try {
       await fetch(`/api/services/${serviceId}`, { method: "POST" });
-      await fetchStatus();
+      // If not on SSE, fetch manually
+      if (connectionMode !== "live") {
+        await fetchStatus();
+      }
     } catch (err) {
       console.error("Failed to refresh service:", err);
     }
   };
 
+  // ─── SSE Connection ──────────────────────────────────────────
+
+  const connectSSE = useCallback(() => {
+    // Close existing connection if any
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+
+    setConnectionMode("connecting");
+
+    const es = new EventSource("/api/events");
+    eventSourceRef.current = es;
+
+    es.addEventListener("status", (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as DashboardData;
+        setData(payload);
+        setError(null);
+        setLoading(false);
+        setConnectionMode("live");
+        reconnectAttemptRef.current = 0; // Reset backoff on successful message
+      } catch (err) {
+        console.error("[SSE] Failed to parse status event:", err);
+      }
+    });
+
+    es.addEventListener("service-update", (event: MessageEvent) => {
+      try {
+        const { serviceId, result } = JSON.parse(event.data) as {
+          serviceId: string;
+          result: HealthCheckResult;
+        };
+        setData((prev) => {
+          if (!prev) return prev;
+          const updatedServices = prev.services.map((s) => {
+            if (s.id !== serviceId) return s;
+            return {
+              ...s,
+              currentStatus: result.status,
+              lastChecked: result.timestamp,
+              lastResponseTime: result.responseTimeMs,
+              recentChecks: [result, ...s.recentChecks.slice(0, 49)],
+            };
+          });
+          return { ...prev, services: updatedServices };
+        });
+      } catch (err) {
+        console.error("[SSE] Failed to parse service-update event:", err);
+      }
+    });
+
+    es.addEventListener("ping", () => {
+      // Keepalive received — connection is healthy
+    });
+
+    es.onopen = () => {
+      setConnectionMode("live");
+      reconnectAttemptRef.current = 0;
+      console.log("[SSE] Connected");
+    };
+
+    es.onerror = () => {
+      es.close();
+      eventSourceRef.current = null;
+
+      const attempt = reconnectAttemptRef.current;
+
+      if (attempt >= maxReconnectAttempts) {
+        // Give up on SSE — fall back to polling permanently
+        console.log("[SSE] Max reconnect attempts reached, falling back to polling");
+        setConnectionMode("polling");
+        return;
+      }
+
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s... capped at 30s
+      const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+      reconnectAttemptRef.current = attempt + 1;
+      console.log(`[SSE] Disconnected, reconnecting in ${delay}ms (attempt ${attempt + 1}/${maxReconnectAttempts})`);
+
+      setConnectionMode("polling"); // Show polling while reconnecting
+
+      reconnectTimerRef.current = setTimeout(() => {
+        connectSSE();
+      }, delay);
+    };
+  }, [maxReconnectAttempts]);
+
+  // ─── Initialize: SSE + initial fetch ─────────────────────────
+
   useEffect(() => {
+    // Always do an initial fetch so we have data immediately
     fetchStatus();
-  }, [fetchStatus]);
+
+    // Try to establish SSE connection
+    connectSSE();
+
+    return () => {
+      // Cleanup on unmount
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  }, [fetchStatus, connectSSE]);
+
+  // ─── Polling fallback (only when SSE is not connected) ───────
 
   useEffect(() => {
     if (!autoRefresh) return;
+    if (connectionMode === "live") return; // SSE is handling updates
     const interval = setInterval(fetchStatus, 30000);
     return () => clearInterval(interval);
-  }, [autoRefresh, fetchStatus]);
+  }, [autoRefresh, fetchStatus, connectionMode]);
 
   // Compute group counts for tab badges
   const groupCounts = useMemo(() => {
@@ -220,6 +346,28 @@ export default function Dashboard() {
             </div>
 
             <div className="flex items-center gap-3">
+              {/* Connection mode indicator */}
+              {connectionMode === "live" ? (
+                <span className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <Radio className="w-3 h-3" />
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </span>
+                  Live
+                </span>
+              ) : connectionMode === "connecting" ? (
+                <span className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  Connecting...
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-gray-800 text-gray-400 border border-gray-700">
+                  <WifiOff className="w-3 h-3" />
+                  Polling
+                </span>
+              )}
+
               <button
                 onClick={() => setAutoRefresh(!autoRefresh)}
                 className={`text-xs px-3 py-1.5 rounded-lg transition-colors ${
@@ -317,8 +465,11 @@ export default function Dashboard() {
         {/* Footer */}
         <footer className="mt-16 pt-8 border-t border-gray-800/50 text-center">
           <p className="text-xs text-gray-600">
-            Platform Status Dashboard | Auto-refreshes every 30s |{" "}
-            {data.summary.totalServices} services monitored across{" "}
+            Platform Status Dashboard |{" "}
+            {connectionMode === "live"
+              ? "Real-time via SSE"
+              : "Auto-refreshes every 30s"}{" "}
+            | {data.summary.totalServices} services monitored across{" "}
             {serviceGroups.length} products
           </p>
         </footer>
