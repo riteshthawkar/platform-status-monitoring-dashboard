@@ -27,8 +27,8 @@ export default function ResponseTimeChart({
   if (!chartData) {
     return (
       <div
-        className="flex items-center justify-center text-xs text-gray-600"
-        style={{ height }}
+        className="flex items-center justify-center text-[11px]"
+        style={{ height, color: "var(--muted-2)" }}
       >
         No response time data
       </div>
@@ -41,16 +41,19 @@ export default function ResponseTimeChart({
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <span className="text-xs text-gray-500">Response Time</span>
-        <span className="text-xs text-gray-400">
+        <span className="text-[11px]" style={{ color: "var(--muted-2)" }}>Response Time</span>
+        <span className="text-[11px]" style={{ color: "var(--muted)" }}>
           avg {Math.round(avgTime)}ms
         </span>
       </div>
       <div className="relative" style={{ height }}>
         {/* Average line */}
         <div
-          className="absolute w-full border-t border-dashed border-gray-700 z-10"
-          style={{ bottom: `${(avgTime / maxTime) * 100}%` }}
+          className="absolute w-full"
+          style={{
+            bottom: `${(avgTime / maxTime) * 100}%`,
+            borderTop: "1px dashed rgba(255,255,255,0.08)",
+          }}
         />
 
         {/* Bars */}
@@ -60,10 +63,10 @@ export default function ResponseTimeChart({
             const x = i * barWidth;
             const color =
               check.status === "operational"
-                ? "#34d399"
+                ? "var(--color-operational)"
                 : check.status === "degraded"
-                  ? "#fbbf24"
-                  : "#f87171";
+                  ? "var(--color-degraded)"
+                  : "var(--color-down)";
 
             return (
               <g key={i}>
@@ -73,7 +76,7 @@ export default function ResponseTimeChart({
                   width={`${Math.max(barWidth - 0.5, 0.5)}%`}
                   height={barHeight}
                   fill={color}
-                  opacity={0.6}
+                  opacity={0.5}
                   rx={1}
                 >
                   <title>

@@ -5,13 +5,15 @@
 // health check results to all connected SSE clients.
 // ============================================================
 
-import { ServiceWithStatus, HealthCheckResult, DashboardSummary, ServiceStatus, Incident } from "@/types";
+import { ServiceWithStatus, HealthCheckResult, DashboardSummary, ServiceStatus, Incident, MaintenanceWindow, ServiceOwner } from "@/types";
 import { getEnabledServices } from "./services-config";
 import {
   getLatestCheck,
   getRecentChecks,
   getUptimePercent,
   getActiveIncidents,
+  getAllServiceOwners,
+  getActiveMaintenanceWindows,
 } from "./database";
 
 type StatusUpdateCallback = (services: ServiceWithStatus[]) => void;
@@ -21,6 +23,7 @@ interface CachedDashboard {
   summary: DashboardSummary;
   services: ServiceWithStatus[];
   activeIncidents: Incident[];
+  activeMaintenanceWindows: MaintenanceWindow[];
   cachedAt: number;
 }
 
@@ -52,6 +55,16 @@ class EventBus {
   rebuildDashboardCache(): CachedDashboard {
     const services = getEnabledServices();
     const activeIncidents = getActiveIncidents();
+    const activeMaintenanceWindows = getActiveMaintenanceWindows().map((window) => {
+      const service = services.find((s) => s.id === window.serviceId);
+      return {
+        ...window,
+        serviceName: service?.name || window.serviceId,
+        serviceGroup: service?.group || "unknown",
+      };
+    });
+    const maintenanceByService = new Map(activeMaintenanceWindows.map((window) => [window.serviceId, window]));
+    const ownerByService = new Map<string, ServiceOwner>(getAllServiceOwners().map((owner) => [owner.serviceId, owner]));
 
     const servicesWithStatus: ServiceWithStatus[] = services.map((service) => {
       const latestCheck = getLatestCheck(service.id);
@@ -59,9 +72,10 @@ class EventBus {
       const hasMaintenanceIncident = activeIncidents.some(
         (i) => i.serviceId === service.id && i.status === "monitoring"
       );
+      const activeMaintenance = maintenanceByService.get(service.id) ?? null;
       return {
         ...service,
-        currentStatus: hasMaintenanceIncident
+        currentStatus: activeMaintenance || hasMaintenanceIncident
           ? ("maintenance" as ServiceStatus)
           : latestCheck?.status ?? ("unknown" as ServiceStatus),
         lastChecked: latestCheck?.timestamp ?? null,
@@ -70,6 +84,8 @@ class EventBus {
         uptimePercent7d: getUptimePercent(service.id, 168),
         uptimePercent30d: getUptimePercent(service.id, 720),
         recentChecks: recentChecks,
+        owner: ownerByService.get(service.id) ?? null,
+        activeMaintenance,
       };
     });
 
@@ -96,8 +112,23 @@ class EventBus {
       lastUpdated: new Date().toISOString(),
     };
 
-    this._dashboardCache = { summary, services: servicesWithStatus, activeIncidents, cachedAt: Date.now() };
+    this._dashboardCache = {
+      summary,
+      services: servicesWithStatus,
+      activeIncidents,
+      activeMaintenanceWindows,
+      cachedAt: Date.now(),
+    };
     return this._dashboardCache;
+  }
+
+  /**
+   * Rebuild the cached dashboard payload and broadcast it to SSE clients.
+   */
+  broadcastDashboardRefresh(): CachedDashboard {
+    const cached = this.rebuildDashboardCache();
+    this.emitStatusUpdate(cached.services);
+    return cached;
   }
 
   /** Number of currently connected SSE clients */

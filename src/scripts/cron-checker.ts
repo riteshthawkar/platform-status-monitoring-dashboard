@@ -13,7 +13,15 @@
 
 import { getEnabledServices } from "../lib/services-config";
 import { checkService } from "../lib/health-checker";
-import { insertHealthCheck, getLatestCheck, getRecentChecks, createIncident, getActiveIncidents, updateIncident } from "../lib/database";
+import {
+  insertHealthCheck,
+  getLatestCheck,
+  getRecentChecks,
+  createIncident,
+  getActiveIncidents,
+  updateIncident,
+  getActiveMaintenanceWindow,
+} from "../lib/database";
 import { sendAlert, processAlertsForResults, getAlertConfig } from "../lib/alerting";
 import { HealthCheckResult, ServiceStatus } from "../types";
 
@@ -121,6 +129,10 @@ async function main() {
  * Only creates an incident after CONSECUTIVE_FAILURES_THRESHOLD consecutive bad checks.
  */
 function manageIncidents(serviceId: string, serviceName: string, check: HealthCheckResult) {
+  if (getActiveMaintenanceWindow(serviceId)) {
+    return;
+  }
+
   const activeIncidents = getActiveIncidents().filter((i) => i.serviceId === serviceId);
 
   if (check.status === "down" || check.status === "degraded") {

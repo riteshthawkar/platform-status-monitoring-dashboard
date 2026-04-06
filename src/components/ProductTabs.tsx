@@ -19,7 +19,7 @@ const iconMap: Record<string, React.ElementType> = {
 
 interface ProductTabsProps {
   groups: ServiceGroup[];
-  activeTab: string; // "all" or a group id
+  activeTab: string;
   onTabChange: (tabId: string) => void;
   groupCounts: Record<string, { total: number; operational: number; down: number; degraded: number }>;
 }
@@ -28,14 +28,19 @@ export default function ProductTabs({ groups, activeTab, onTabChange, groupCount
   const allCounts = groupCounts["all"] || { total: 0, operational: 0, down: 0, degraded: 0 };
 
   return (
-    <div className="mb-6">
-      <nav className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-        {/* All Services tab */}
+    <div
+      className="mb-6 rounded-[22px] p-2 overflow-hidden"
+      style={{
+        background: "color-mix(in srgb, var(--panel) 92%, transparent)",
+        border: "1px solid var(--border)",
+        boxShadow: "var(--shadow-soft)",
+      }}
+    >
+      <nav className="flex gap-2 overflow-x-auto">
         <TabButton
           id="all"
           label="All Services"
           icon={LayoutGrid}
-          color="gray"
           isActive={activeTab === "all"}
           count={allCounts.total}
           operational={allCounts.operational}
@@ -43,7 +48,6 @@ export default function ProductTabs({ groups, activeTab, onTabChange, groupCount
           onClick={() => onTabChange("all")}
         />
 
-        {/* Product group tabs */}
         {groups.map((group) => {
           const Icon = iconMap[group.icon] || Globe;
           const counts = groupCounts[group.id] || { total: 0, operational: 0, down: 0, degraded: 0 };
@@ -53,7 +57,6 @@ export default function ProductTabs({ groups, activeTab, onTabChange, groupCount
               id={group.id}
               label={group.shortName}
               icon={Icon}
-              color={group.color}
               isActive={activeTab === group.id}
               count={counts.total}
               operational={counts.operational}
@@ -71,7 +74,6 @@ interface TabButtonProps {
   id: string;
   label: string;
   icon: React.ElementType;
-  color: string;
   isActive: boolean;
   count: number;
   operational: number;
@@ -79,70 +81,42 @@ interface TabButtonProps {
   onClick: () => void;
 }
 
-const colorMap: Record<string, { active: string; hover: string; border: string; text: string; dot: string }> = {
-  gray: {
-    active: "bg-gray-800 border-gray-600",
-    hover: "hover:bg-gray-800/50 hover:border-gray-700",
-    border: "border-gray-800",
-    text: "text-gray-300",
-    dot: "bg-gray-400",
-  },
-  violet: {
-    active: "bg-violet-500/15 border-violet-500/50",
-    hover: "hover:bg-violet-500/5 hover:border-violet-500/30",
-    border: "border-gray-800",
-    text: "text-violet-300",
-    dot: "bg-violet-400",
-  },
-  sky: {
-    active: "bg-sky-500/15 border-sky-500/50",
-    hover: "hover:bg-sky-500/5 hover:border-sky-500/30",
-    border: "border-gray-800",
-    text: "text-sky-300",
-    dot: "bg-sky-400",
-  },
-  rose: {
-    active: "bg-rose-500/15 border-rose-500/50",
-    hover: "hover:bg-rose-500/5 hover:border-rose-500/30",
-    border: "border-gray-800",
-    text: "text-rose-300",
-    dot: "bg-rose-400",
-  },
-  amber: {
-    active: "bg-amber-500/15 border-amber-500/50",
-    hover: "hover:bg-amber-500/5 hover:border-amber-500/30",
-    border: "border-gray-800",
-    text: "text-amber-300",
-    dot: "bg-amber-400",
-  },
-};
-
-function TabButton({ label, icon: Icon, color, isActive, count, operational, hasIssues, onClick }: TabButtonProps) {
-  const colors = colorMap[color] || colorMap.gray;
-
+function TabButton({ label, icon: Icon, isActive, count, operational, hasIssues, onClick }: TabButtonProps) {
   return (
     <button
       onClick={onClick}
-      className={`
-        flex items-center gap-2.5 px-4 py-2.5 rounded-xl border text-sm font-medium
-        transition-all duration-200 whitespace-nowrap flex-shrink-0
-        ${isActive ? `${colors.active} ${colors.text}` : `${colors.border} text-gray-500 ${colors.hover}`}
-      `}
+      className="relative flex items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium transition-all whitespace-nowrap flex-shrink-0 rounded-2xl"
+      style={{
+        color: isActive ? "var(--foreground)" : "var(--muted)",
+        background: isActive ? "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))" : "transparent",
+        border: isActive ? "1px solid rgba(255,255,255,0.08)" : "1px solid transparent",
+      }}
+      onMouseEnter={(e) => {
+        if (!isActive) {
+          e.currentTarget.style.color = "var(--foreground)";
+          e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+        }
+      }}
+      onMouseLeave={(e) => {
+        if (!isActive) {
+          e.currentTarget.style.color = "var(--muted)";
+          e.currentTarget.style.background = "transparent";
+        }
+      }}
     >
-      <Icon className={`w-4 h-4 ${isActive ? colors.text : "text-gray-500"}`} />
+      <Icon className="w-3.5 h-3.5" />
       <span>{label}</span>
-
-      {/* Count badge */}
       <span
-        className={`
-          inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-md
-          ${isActive ? "bg-white/10" : "bg-gray-800/80"}
-        `}
+        className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded"
+        style={{
+          background: isActive ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)",
+          color: isActive ? "var(--foreground)" : "var(--muted-2)",
+        }}
       >
         {hasIssues ? (
-          <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse-dot" />
+          <span className="w-1.5 h-1.5 rounded-full animate-pulse-dot" style={{ background: "var(--color-down)" }} />
         ) : (
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--color-operational)" }} />
         )}
         {operational}/{count}
       </span>

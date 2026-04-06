@@ -5,6 +5,9 @@ import {
   updateTeamMember,
   deleteTeamMember,
 } from "@/lib/database";
+import { sendWelcomeEmail } from "@/lib/alerting";
+import { withAuth } from "@/lib/auth";
+import { eventBus } from "@/lib/event-bus";
 
 export const dynamic = "force-dynamic";
 
@@ -17,18 +20,20 @@ export async function GET() {
   }
 }
 
-export async function POST(request: NextRequest) {
+export const POST = withAuth(async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { name, email, role, action, id } = body;
 
     if (action === "delete" && id) {
       deleteTeamMember(id);
+      eventBus.broadcastDashboardRefresh();
       return NextResponse.json({ success: true });
     }
 
     if (action === "update" && id) {
       updateTeamMember(id, { name, email, role });
+      eventBus.broadcastDashboardRefresh();
       return NextResponse.json({ success: true });
     }
 
@@ -46,6 +51,14 @@ export async function POST(request: NextRequest) {
       role: role || "engineer",
     });
 
+    // Send welcome email — fire and forget
+    sendWelcomeEmail({
+      toEmail: email,
+      toName: name,
+      role: role || "engineer",
+    }).catch((err) => console.error("[Team] Welcome email failed:", err));
+
+    eventBus.broadcastDashboardRefresh();
     return NextResponse.json({ success: true, id: newId });
   } catch (error) {
     const msg = String(error);
@@ -57,4 +70,4 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json({ error: msg }, { status: 500 });
   }
-}
+});

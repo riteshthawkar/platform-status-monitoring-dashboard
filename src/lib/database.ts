@@ -5,7 +5,7 @@
 
 import Database from "better-sqlite3";
 import path from "path";
-import { HealthCheckResult, Incident, IncidentUpdate, UptimeBar, TeamMember, IncidentAssignment, AssignmentStatus } from "@/types";
+import { HealthCheckResult, Incident, IncidentUpdate, UptimeBar, TeamMember, IncidentAssignment, AssignmentStatus, ServiceStatus, ServiceOwner, MaintenanceWindow } from "@/types";
 
 // Use DATABASE_PATH env var for persistent disk (Render/Railway/Fly.io)
 // Falls back to local ./data/ for development
@@ -58,6 +58,9 @@ function initializeDatabase(db: Database.Database) {
         CHECK(status IN ('investigating', 'identified', 'monitoring', 'resolved')),
       severity TEXT NOT NULL DEFAULT 'minor'
         CHECK(severity IN ('minor', 'major', 'critical')),
+      owner_member_id INTEGER,
+      acknowledged_at TEXT,
+      acknowledged_by_member_id INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       resolved_at TEXT
@@ -102,6 +105,59 @@ function initializeDatabase(db: Database.Database) {
       alert_type TEXT NOT NULL
     );
 
+    -- Persistent reminder state for ongoing service failures
+    CREATE TABLE IF NOT EXISTS alert_reminders (
+      service_id TEXT PRIMARY KEY,
+      failure_started_at TEXT NOT NULL,
+      last_reminder_at TEXT,
+      last_status TEXT NOT NULL
+        CHECK(last_status IN ('operational', 'degraded', 'down', 'maintenance', 'unknown')),
+      reminder_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_alert_reminders_updated
+      ON alert_reminders(updated_at DESC);
+
+    -- Persistent escalation state for prolonged unresolved failures
+    CREATE TABLE IF NOT EXISTS alert_escalations (
+      service_id TEXT PRIMARY KEY,
+      failure_started_at TEXT NOT NULL,
+      last_escalated_at TEXT,
+      last_status TEXT NOT NULL
+        CHECK(last_status IN ('operational', 'degraded', 'down', 'maintenance', 'unknown')),
+      escalation_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_alert_escalations_updated
+      ON alert_escalations(updated_at DESC);
+
+    -- Service ownership
+    CREATE TABLE IF NOT EXISTS service_owners (
+      service_id TEXT PRIMARY KEY,
+      member_id INTEGER NOT NULL REFERENCES team_members(id) ON DELETE CASCADE,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Planned maintenance windows
+    CREATE TABLE IF NOT EXISTS maintenance_windows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      notes TEXT,
+      starts_at TEXT NOT NULL,
+      ends_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      cancelled_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_maintenance_service
+      ON maintenance_windows(service_id, starts_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_maintenance_active
+      ON maintenance_windows(starts_at, ends_at, cancelled_at);
+
     -- Team members
     CREATE TABLE IF NOT EXISTS team_members (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,6 +189,22 @@ function initializeDatabase(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_assignments_deadline
       ON incident_assignments(deadline);
   `);
+
+  ensureColumn(db, "incidents", "owner_member_id", "INTEGER");
+  ensureColumn(db, "incidents", "acknowledged_at", "TEXT");
+  ensureColumn(db, "incidents", "acknowledged_by_member_id", "INTEGER");
+}
+
+function ensureColumn(db: Database.Database, tableName: string, columnName: string, definition: string): void {
+  const columns = db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all() as Array<{ name: string }>;
+
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
 }
 
 // ─── Health Check Queries ────────────────────────────────────
@@ -237,7 +309,36 @@ export function cleanOldChecks(daysToKeep: number = 90): void {
 
 // ─── Incident Queries ────────────────────────────────────────
 
-export function createIncident(incident: Omit<Incident, "id" | "createdAt" | "updatedAt" | "resolvedAt">): number {
+const INCIDENT_SELECT_SQL = `
+  SELECT
+    i.id,
+    i.service_id as serviceId,
+    i.title,
+    i.description,
+    i.status,
+    i.severity,
+    i.owner_member_id as ownerMemberId,
+    owner.name as ownerMemberName,
+    owner.email as ownerMemberEmail,
+    i.acknowledged_at as acknowledgedAt,
+    i.acknowledged_by_member_id as acknowledgedByMemberId,
+    ack.name as acknowledgedByName,
+    ack.email as acknowledgedByEmail,
+    i.created_at as createdAt,
+    i.updated_at as updatedAt,
+    i.resolved_at as resolvedAt
+  FROM incidents i
+  LEFT JOIN team_members owner ON owner.id = i.owner_member_id
+  LEFT JOIN team_members ack ON ack.id = i.acknowledged_by_member_id
+`;
+
+export function createIncident(incident: {
+  serviceId: string;
+  title: string;
+  description: string;
+  status: Incident["status"];
+  severity: Incident["severity"];
+}): number {
   const db = getDb();
   const result = db
     .prepare(
@@ -279,13 +380,35 @@ export function updateIncident(id: number, updates: Partial<Incident>): void {
   db.prepare(`UPDATE incidents SET ${fields.join(", ")} WHERE id = ?`).run(...values);
 }
 
+export function assignIncidentOwner(id: number, memberId: number | null): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE incidents
+     SET owner_member_id = ?,
+         updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(memberId, id);
+}
+
+export function acknowledgeIncident(id: number, memberId: number): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE incidents
+     SET acknowledged_at = COALESCE(acknowledged_at, datetime('now')),
+         acknowledged_by_member_id = ?,
+         owner_member_id = COALESCE(owner_member_id, ?),
+         updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(memberId, memberId, id);
+}
+
 export function getActiveIncidents(): Incident[] {
   const db = getDb();
   return db
     .prepare(
-      `SELECT id, service_id as serviceId, title, description, status, severity,
-              created_at as createdAt, updated_at as updatedAt, resolved_at as resolvedAt
-       FROM incidents WHERE status != 'resolved' ORDER BY created_at DESC`
+      `${INCIDENT_SELECT_SQL}
+       WHERE i.status != 'resolved'
+       ORDER BY i.created_at DESC`
     )
     .all() as Incident[];
 }
@@ -294,11 +417,37 @@ export function getRecentIncidents(limit: number = 20): Incident[] {
   const db = getDb();
   return db
     .prepare(
-      `SELECT id, service_id as serviceId, title, description, status, severity,
-              created_at as createdAt, updated_at as updatedAt, resolved_at as resolvedAt
-       FROM incidents ORDER BY created_at DESC LIMIT ?`
+      `${INCIDENT_SELECT_SQL}
+       ORDER BY i.created_at DESC LIMIT ?`
     )
     .all(limit) as Incident[];
+}
+
+export function getIncidentById(id: number): Incident | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `${INCIDENT_SELECT_SQL}
+       WHERE i.id = ?`
+    )
+    .get(id) as Incident | undefined;
+  return row ?? null;
+}
+
+export function getActiveIncidentOwnerByServiceId(serviceId: string): TeamMember | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT tm.id, tm.name, tm.email, tm.role, tm.created_at AS createdAt
+       FROM incidents i
+       JOIN team_members tm ON tm.id = i.owner_member_id
+       WHERE i.service_id = ?
+         AND i.status != 'resolved'
+       ORDER BY i.created_at DESC
+       LIMIT 1`
+    )
+    .get(serviceId) as TeamMember | undefined;
+  return row ?? null;
 }
 
 export function addIncidentUpdate(update: Omit<IncidentUpdate, "id" | "createdAt">): void {
@@ -375,6 +524,8 @@ export interface AlertStats {
   totalFailures24h: number;
   totalRecoveries24h: number;
   totalDegraded24h: number;
+  totalReminders24h: number;
+  totalEscalations24h: number;
   totalFailed24h: number; // send status = 'failed'
   total7d: number;
   byChannel: Record<string, number>;
@@ -391,11 +542,21 @@ export function getAlertStats(): AlertStats {
          SUM(CASE WHEN alert_type = 'failure' THEN 1 ELSE 0 END) AS failures,
          SUM(CASE WHEN alert_type = 'recovery' THEN 1 ELSE 0 END) AS recoveries,
          SUM(CASE WHEN alert_type = 'degraded' THEN 1 ELSE 0 END) AS degraded,
+         SUM(CASE WHEN alert_type IN ('failure_reminder', 'degraded_reminder') THEN 1 ELSE 0 END) AS reminders,
+         SUM(CASE WHEN alert_type IN ('failure_escalation', 'degraded_escalation') THEN 1 ELSE 0 END) AS escalations,
          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS sendFailed
        FROM alert_history
        WHERE created_at >= datetime('now', '-1 day')`
     )
-    .get() as { total: number; failures: number; recoveries: number; degraded: number; sendFailed: number };
+    .get() as {
+      total: number;
+      failures: number;
+      recoveries: number;
+      degraded: number;
+      reminders: number;
+      escalations: number;
+      sendFailed: number;
+    };
 
   // Total for last 7 days
   const total7d = db
@@ -425,6 +586,8 @@ export function getAlertStats(): AlertStats {
     totalFailures24h: counts24h.failures,
     totalRecoveries24h: counts24h.recoveries,
     totalDegraded24h: counts24h.degraded,
+    totalReminders24h: counts24h.reminders,
+    totalEscalations24h: counts24h.escalations,
     totalFailed24h: counts24h.sendFailed,
     total7d: total7d.total,
     byChannel,
@@ -481,6 +644,451 @@ export function getAllCooldowns(): CooldownRow[] {
     .all() as CooldownRow[];
 }
 
+// ─── Alert Reminder Queries ─────────────────────────────────
+
+export interface AlertReminderRow {
+  serviceId: string;
+  failureStartedAt: string;
+  lastReminderAt: string | null;
+  lastStatus: ServiceStatus;
+  reminderCount: number;
+  updatedAt: string;
+}
+
+export function startAlertReminder(serviceId: string, status: ServiceStatus): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO alert_reminders (
+       service_id, failure_started_at, last_reminder_at, last_status, reminder_count, updated_at
+     )
+     VALUES (?, datetime('now'), NULL, ?, 0, datetime('now'))
+     ON CONFLICT(service_id) DO UPDATE SET
+       failure_started_at = datetime('now'),
+       last_reminder_at = NULL,
+       last_status = excluded.last_status,
+       reminder_count = 0,
+       updated_at = datetime('now')`
+  ).run(serviceId, status);
+}
+
+export function touchAlertReminder(serviceId: string, status: ServiceStatus): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO alert_reminders (
+       service_id, failure_started_at, last_status, reminder_count, updated_at
+     )
+     VALUES (?, datetime('now'), ?, 0, datetime('now'))
+     ON CONFLICT(service_id) DO UPDATE SET
+       last_status = excluded.last_status,
+       updated_at = datetime('now')`
+  ).run(serviceId, status);
+}
+
+export function clearAlertReminder(serviceId: string): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM alert_reminders WHERE service_id = ?`).run(serviceId);
+}
+
+export function claimAlertReminderIfDue(
+  serviceId: string,
+  status: ServiceStatus,
+  firstReminderAfterMinutes: number,
+  repeatReminderMinutes: number
+): AlertReminderRow | null {
+  const db = getDb();
+
+  const tx = db.transaction(() => {
+    const existing = db
+      .prepare(
+        `SELECT
+           service_id AS serviceId,
+           failure_started_at AS failureStartedAt,
+           last_reminder_at AS lastReminderAt,
+           last_status AS lastStatus,
+           reminder_count AS reminderCount,
+           updated_at AS updatedAt
+         FROM alert_reminders
+         WHERE service_id = ?`
+      )
+      .get(serviceId) as AlertReminderRow | undefined;
+
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO alert_reminders (
+           service_id, failure_started_at, last_status, reminder_count, updated_at
+         )
+         VALUES (?, datetime('now'), ?, 0, datetime('now'))`
+      ).run(serviceId, status);
+      return null;
+    }
+
+    const nowMs = Date.now();
+    const failureStartedMs = new Date(existing.failureStartedAt + "Z").getTime();
+    const lastReminderMs = existing.lastReminderAt
+      ? new Date(existing.lastReminderAt + "Z").getTime()
+      : null;
+
+    const initialDelayMs = firstReminderAfterMinutes * 60 * 1000;
+    const repeatDelayMs = repeatReminderMinutes * 60 * 1000;
+
+    const isDue = lastReminderMs === null
+      ? nowMs - failureStartedMs >= initialDelayMs
+      : nowMs - lastReminderMs >= repeatDelayMs;
+
+    if (!isDue) {
+      db.prepare(
+        `UPDATE alert_reminders
+         SET last_status = ?, updated_at = datetime('now')
+         WHERE service_id = ?`
+      ).run(status, serviceId);
+      return null;
+    }
+
+    db.prepare(
+      `UPDATE alert_reminders
+       SET last_reminder_at = datetime('now'),
+           last_status = ?,
+           reminder_count = reminder_count + 1,
+           updated_at = datetime('now')
+       WHERE service_id = ?`
+    ).run(status, serviceId);
+
+    const updated = db
+      .prepare(
+        `SELECT
+           service_id AS serviceId,
+           failure_started_at AS failureStartedAt,
+           last_reminder_at AS lastReminderAt,
+           last_status AS lastStatus,
+           reminder_count AS reminderCount,
+           updated_at AS updatedAt
+         FROM alert_reminders
+         WHERE service_id = ?`
+      )
+      .get(serviceId) as AlertReminderRow | undefined;
+
+    return updated ?? null;
+  });
+
+  return tx();
+}
+
+// ─── Alert Escalation Queries ───────────────────────────────
+
+export interface AlertEscalationRow {
+  serviceId: string;
+  failureStartedAt: string;
+  lastEscalatedAt: string | null;
+  lastStatus: ServiceStatus;
+  escalationCount: number;
+  updatedAt: string;
+}
+
+export function startAlertEscalation(serviceId: string, status: ServiceStatus): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO alert_escalations (
+       service_id, failure_started_at, last_escalated_at, last_status, escalation_count, updated_at
+     )
+     VALUES (?, datetime('now'), NULL, ?, 0, datetime('now'))
+     ON CONFLICT(service_id) DO UPDATE SET
+       failure_started_at = datetime('now'),
+       last_escalated_at = NULL,
+       last_status = excluded.last_status,
+       escalation_count = 0,
+       updated_at = datetime('now')`
+  ).run(serviceId, status);
+}
+
+export function touchAlertEscalation(serviceId: string, status: ServiceStatus): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO alert_escalations (
+       service_id, failure_started_at, last_status, escalation_count, updated_at
+     )
+     VALUES (?, datetime('now'), ?, 0, datetime('now'))
+     ON CONFLICT(service_id) DO UPDATE SET
+       last_status = excluded.last_status,
+       updated_at = datetime('now')`
+  ).run(serviceId, status);
+}
+
+export function clearAlertEscalation(serviceId: string): void {
+  const db = getDb();
+  db.prepare(`DELETE FROM alert_escalations WHERE service_id = ?`).run(serviceId);
+}
+
+export function claimAlertEscalationIfDue(
+  serviceId: string,
+  status: ServiceStatus,
+  firstEscalationAfterMinutes: number,
+  repeatEscalationMinutes: number
+): AlertEscalationRow | null {
+  const db = getDb();
+
+  const tx = db.transaction(() => {
+    const existing = db
+      .prepare(
+        `SELECT
+           service_id AS serviceId,
+           failure_started_at AS failureStartedAt,
+           last_escalated_at AS lastEscalatedAt,
+           last_status AS lastStatus,
+           escalation_count AS escalationCount,
+           updated_at AS updatedAt
+         FROM alert_escalations
+         WHERE service_id = ?`
+      )
+      .get(serviceId) as AlertEscalationRow | undefined;
+
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO alert_escalations (
+           service_id, failure_started_at, last_status, escalation_count, updated_at
+         )
+         VALUES (?, datetime('now'), ?, 0, datetime('now'))`
+      ).run(serviceId, status);
+      return null;
+    }
+
+    const nowMs = Date.now();
+    const failureStartedMs = new Date(existing.failureStartedAt + "Z").getTime();
+    const lastEscalatedMs = existing.lastEscalatedAt
+      ? new Date(existing.lastEscalatedAt + "Z").getTime()
+      : null;
+
+    const initialDelayMs = firstEscalationAfterMinutes * 60 * 1000;
+    const repeatDelayMs = repeatEscalationMinutes * 60 * 1000;
+
+    const isDue = lastEscalatedMs === null
+      ? nowMs - failureStartedMs >= initialDelayMs
+      : nowMs - lastEscalatedMs >= repeatDelayMs;
+
+    if (!isDue) {
+      db.prepare(
+        `UPDATE alert_escalations
+         SET last_status = ?, updated_at = datetime('now')
+         WHERE service_id = ?`
+      ).run(status, serviceId);
+      return null;
+    }
+
+    db.prepare(
+      `UPDATE alert_escalations
+       SET last_escalated_at = datetime('now'),
+           last_status = ?,
+           escalation_count = escalation_count + 1,
+           updated_at = datetime('now')
+       WHERE service_id = ?`
+    ).run(status, serviceId);
+
+    const updated = db
+      .prepare(
+        `SELECT
+           service_id AS serviceId,
+           failure_started_at AS failureStartedAt,
+           last_escalated_at AS lastEscalatedAt,
+           last_status AS lastStatus,
+           escalation_count AS escalationCount,
+           updated_at AS updatedAt
+         FROM alert_escalations
+         WHERE service_id = ?`
+      )
+      .get(serviceId) as AlertEscalationRow | undefined;
+
+    return updated ?? null;
+  });
+
+  return tx();
+}
+
+// ─── Service Ownership Queries ──────────────────────────────
+
+export function getAllServiceOwners(): ServiceOwner[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT
+         so.service_id AS serviceId,
+         so.member_id AS memberId,
+         tm.name AS memberName,
+         tm.email AS memberEmail,
+         tm.role AS memberRole,
+         so.updated_at AS updatedAt
+       FROM service_owners so
+       JOIN team_members tm ON tm.id = so.member_id
+       ORDER BY so.service_id ASC`
+    )
+    .all() as ServiceOwner[];
+}
+
+export function getServiceOwner(serviceId: string): ServiceOwner | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT
+         so.service_id AS serviceId,
+         so.member_id AS memberId,
+         tm.name AS memberName,
+         tm.email AS memberEmail,
+         tm.role AS memberRole,
+         so.updated_at AS updatedAt
+       FROM service_owners so
+       JOIN team_members tm ON tm.id = so.member_id
+       WHERE so.service_id = ?`
+    )
+    .get(serviceId) as ServiceOwner | undefined;
+  return row ?? null;
+}
+
+export function setServiceOwner(serviceId: string, memberId: number | null): void {
+  const db = getDb();
+
+  if (memberId === null) {
+    db.prepare(`DELETE FROM service_owners WHERE service_id = ?`).run(serviceId);
+    return;
+  }
+
+  db.prepare(
+    `INSERT INTO service_owners (service_id, member_id, updated_at)
+     VALUES (?, ?, datetime('now'))
+     ON CONFLICT(service_id) DO UPDATE SET
+       member_id = excluded.member_id,
+       updated_at = datetime('now')`
+  ).run(serviceId, memberId);
+}
+
+// ─── Maintenance Window Queries ─────────────────────────────
+
+function annotateMaintenanceWindow(row: MaintenanceWindow): MaintenanceWindow {
+  const now = Date.now();
+  const startsAtMs = new Date(row.startsAt).getTime();
+  const endsAtMs = new Date(row.endsAt).getTime();
+
+  return {
+    ...row,
+    isActive: !row.cancelledAt && startsAtMs <= now && endsAtMs >= now,
+    isUpcoming: !row.cancelledAt && startsAtMs > now,
+  };
+}
+
+export function createMaintenanceWindow(window: {
+  serviceId: string;
+  title: string;
+  notes?: string;
+  startsAt: string;
+  endsAt: string;
+}): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `INSERT INTO maintenance_windows (service_id, title, notes, starts_at, ends_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+    .run(
+      window.serviceId,
+      window.title,
+      window.notes ?? null,
+      window.startsAt,
+      window.endsAt
+    );
+
+  return result.lastInsertRowid as number;
+}
+
+export function cancelMaintenanceWindow(id: number): void {
+  const db = getDb();
+  db.prepare(
+    `UPDATE maintenance_windows
+     SET cancelled_at = datetime('now')
+     WHERE id = ?`
+  ).run(id);
+}
+
+export function getMaintenanceWindows(options?: {
+  serviceId?: string;
+  activeOnly?: boolean;
+  upcomingOnly?: boolean;
+  includeCancelled?: boolean;
+  limit?: number;
+}): MaintenanceWindow[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  if (options?.serviceId) {
+    conditions.push("mw.service_id = ?");
+    values.push(options.serviceId);
+  }
+
+  if (!options?.includeCancelled) {
+    conditions.push("mw.cancelled_at IS NULL");
+  }
+
+  if (options?.activeOnly) {
+    conditions.push("datetime(mw.starts_at) <= datetime('now')");
+    conditions.push("datetime(mw.ends_at) >= datetime('now')");
+  }
+
+  if (options?.upcomingOnly) {
+    conditions.push("datetime(mw.starts_at) > datetime('now')");
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limitClause = options?.limit ? "LIMIT ?" : "";
+  if (options?.limit) values.push(options.limit);
+
+  const rows = db
+    .prepare(
+      `SELECT
+         mw.id,
+         mw.service_id AS serviceId,
+         mw.title,
+         mw.notes,
+         mw.starts_at AS startsAt,
+         mw.ends_at AS endsAt,
+         mw.created_at AS createdAt,
+         mw.cancelled_at AS cancelledAt
+       FROM maintenance_windows mw
+       ${where}
+       ORDER BY datetime(mw.starts_at) ASC
+       ${limitClause}`
+    )
+    .all(...values) as MaintenanceWindow[];
+
+  return rows.map(annotateMaintenanceWindow);
+}
+
+export function getActiveMaintenanceWindow(serviceId: string): MaintenanceWindow | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT
+         id,
+         service_id AS serviceId,
+         title,
+         notes,
+         starts_at AS startsAt,
+         ends_at AS endsAt,
+         created_at AS createdAt,
+         cancelled_at AS cancelledAt
+       FROM maintenance_windows
+       WHERE service_id = ?
+         AND cancelled_at IS NULL
+         AND datetime(starts_at) <= datetime('now')
+         AND datetime(ends_at) >= datetime('now')
+       ORDER BY datetime(starts_at) ASC
+       LIMIT 1`
+    )
+    .get(serviceId) as MaintenanceWindow | undefined;
+
+  return row ? annotateMaintenanceWindow(row) : null;
+}
+
+export function getActiveMaintenanceWindows(): MaintenanceWindow[] {
+  return getMaintenanceWindows({ activeOnly: true });
+}
+
 // ─── Team Member Queries ──────────────────────────────────────
 
 export function createTeamMember(member: { name: string; email: string; role: string }): number {
@@ -530,6 +1138,9 @@ export function updateTeamMember(id: number, updates: { name?: string; email?: s
 export function deleteTeamMember(id: number): void {
   const db = getDb();
   db.prepare(`DELETE FROM incident_assignments WHERE assignee_id = ?`).run(id);
+  db.prepare(`DELETE FROM service_owners WHERE member_id = ?`).run(id);
+  db.prepare(`UPDATE incidents SET owner_member_id = NULL WHERE owner_member_id = ?`).run(id);
+  db.prepare(`UPDATE incidents SET acknowledged_by_member_id = NULL WHERE acknowledged_by_member_id = ?`).run(id);
   db.prepare(`DELETE FROM team_members WHERE id = ?`).run(id);
 }
 

@@ -13,6 +13,8 @@ export const dynamic = "force-dynamic";
 export const POST = withAuth(async function POST() {
   try {
     const results = await checkAllServices();
+    eventBus.broadcastDashboardRefresh();
+
     return NextResponse.json({
       success: true,
       checked: results.length,
@@ -35,6 +37,7 @@ export async function GET(request: NextRequest) {
       summary: cached.summary,
       services: cached.services,
       activeIncidents: cached.activeIncidents,
+      activeMaintenanceWindows: cached.activeMaintenanceWindows,
     });
   } catch (error) {
     return NextResponse.json(

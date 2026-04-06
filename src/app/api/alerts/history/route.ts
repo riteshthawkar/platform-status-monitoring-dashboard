@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { getAlertHistory, getAlertStats } from "@/lib/database";
+import { getAlertConfig } from "@/lib/alerting";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,7 @@ export async function GET(request: NextRequest) {
 
     const alerts = getAlertHistory(limit, serviceId);
     const stats = getAlertStats();
+    const config = getAlertConfig();
 
     return NextResponse.json({
       alerts,
@@ -25,8 +27,11 @@ export async function GET(request: NextRequest) {
         total24h: stats.total24h,
         totalFailures24h: stats.totalFailures24h,
         totalRecoveries24h: stats.totalRecoveries24h,
+        totalReminders24h: stats.totalReminders24h,
+        totalEscalations24h: stats.totalEscalations24h,
         byChannel: stats.byChannel,
       },
+      config,
     });
   } catch (error) {
     return NextResponse.json(

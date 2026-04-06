@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { Incident } from "@/types";
 import { AlertCircle, AlertTriangle, Info } from "lucide-react";
 
@@ -8,101 +9,127 @@ interface IncidentsListProps {
 }
 
 const severityConfig = {
-  critical: {
-    icon: AlertCircle,
-    color: "text-red-400",
-    bg: "bg-red-400/5",
-    border: "border-red-500/20",
-  },
-  major: {
-    icon: AlertTriangle,
-    color: "text-amber-400",
-    bg: "bg-amber-400/5",
-    border: "border-amber-500/20",
-  },
-  minor: {
-    icon: Info,
-    color: "text-blue-400",
-    bg: "bg-blue-400/5",
-    border: "border-blue-500/20",
-  },
+  critical: { icon: AlertCircle, color: "var(--color-down)" },
+  major: { icon: AlertTriangle, color: "var(--color-degraded)" },
+  minor: { icon: Info, color: "var(--color-maintenance)" },
 };
 
 const statusLabels: Record<string, { label: string; color: string }> = {
-  investigating: { label: "Investigating", color: "text-red-400" },
-  identified: { label: "Identified", color: "text-amber-400" },
-  monitoring: { label: "Monitoring", color: "text-blue-400" },
-  resolved: { label: "Resolved", color: "text-emerald-400" },
+  investigating: { label: "Investigating", color: "var(--color-down)" },
+  identified: { label: "Identified", color: "var(--color-degraded)" },
+  monitoring: { label: "Monitoring", color: "var(--color-maintenance)" },
+  resolved: { label: "Resolved", color: "var(--color-operational)" },
 };
 
 export default function IncidentsList({ incidents }: IncidentsListProps) {
-  if (incidents.length === 0) {
-    return null;
-  }
+  if (incidents.length === 0) return null;
 
   return (
-    <div className="mb-8">
-      <h2 className="text-lg font-semibold text-white mb-4 flex items-center gap-2">
-        <AlertTriangle className="w-5 h-5 text-amber-400" />
-        Active Incidents
-      </h2>
-      <div className="space-y-3">
-        {incidents.map((incident) => {
-          const severity =
-            severityConfig[incident.severity] || severityConfig.minor;
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="text-[13px] font-semibold flex items-center gap-2" style={{ color: "var(--foreground)" }}>
+          <AlertTriangle className="w-4 h-4" style={{ color: "var(--color-degraded)" }} />
+          Active Incidents
+        </h2>
+        <span
+          className="text-[11px] px-2 py-1 rounded-full"
+          style={{
+            color: incidents.length > 0 ? "var(--color-degraded)" : "var(--muted)",
+            background: "color-mix(in srgb, var(--color-degraded) 10%, transparent)",
+          }}
+        >
+          {incidents.length}
+        </span>
+      </div>
+      <div
+        className="rounded-[22px] overflow-hidden"
+        style={{
+          border: "1px solid var(--border)",
+          background: "color-mix(in srgb, var(--panel) 90%, transparent)",
+          boxShadow: "var(--shadow-soft)",
+        }}
+      >
+        {incidents.map((incident, i) => {
+          const severity = severityConfig[incident.severity] || severityConfig.minor;
           const SeverityIcon = severity.icon;
-          const statusInfo =
-            statusLabels[incident.status] || statusLabels.investigating;
+          const statusInfo = statusLabels[incident.status] || statusLabels.investigating;
+          const isAcknowledged = !!incident.acknowledgedAt;
 
           return (
             <div
               key={incident.id}
-              className={`rounded-xl border ${severity.border} ${severity.bg} p-4`}
+              className="flex items-start gap-3 px-4 py-3"
+              style={{
+                background: "var(--card)",
+                borderBottom: i < incidents.length - 1 ? "1px solid var(--border)" : "none",
+              }}
             >
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3">
-                  <SeverityIcon
-                    className={`w-5 h-5 mt-0.5 ${severity.color}`}
-                  />
-                  <div>
-                    <h3 className="text-sm font-semibold text-white">
-                      {incident.title}
-                    </h3>
-                    {incident.description && (
-                      <p className="text-xs text-gray-400 mt-1">
-                        {incident.description}
-                      </p>
-                    )}
-                    <div className="flex items-center gap-3 mt-2">
-                      <span
-                        className={`text-xs font-medium ${statusInfo.color}`}
-                      >
-                        {statusInfo.label}
-                      </span>
-                      <span className="text-xs text-gray-600">|</span>
-                      <span className="text-xs text-gray-500">
-                        Started{" "}
-                        {new Date(incident.createdAt).toLocaleString()}
-                      </span>
-                      {incident.resolvedAt && (
-                        <>
-                          <span className="text-xs text-gray-600">|</span>
-                          <span className="text-xs text-gray-500">
-                            Resolved{" "}
-                            {new Date(
-                              incident.resolvedAt
-                            ).toLocaleString()}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
+              <SeverityIcon className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: severity.color }} />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={`/incidents/${incident.id}`}
+                    className="text-[13px] font-medium hover:underline"
+                    style={{ color: "var(--foreground)" }}
+                  >
+                    {incident.title}
+                  </Link>
+                  <span
+                    className="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded"
+                    style={{
+                      color: severity.color,
+                      background: `color-mix(in srgb, ${severity.color} 10%, transparent)`,
+                    }}
+                  >
+                    {incident.severity}
+                  </span>
                 </div>
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-full ${severity.bg} ${severity.color} font-medium`}
-                >
-                  {incident.severity.toUpperCase()}
-                </span>
+                {incident.description && (
+                  <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                    {incident.description}
+                  </p>
+                )}
+                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                  <span
+                    className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                    style={{
+                      color: isAcknowledged ? "var(--color-operational)" : "var(--color-degraded)",
+                      background: isAcknowledged
+                        ? "color-mix(in srgb, var(--color-operational) 10%, transparent)"
+                        : "color-mix(in srgb, var(--color-degraded) 10%, transparent)",
+                    }}
+                  >
+                    {isAcknowledged
+                      ? `Acknowledged by ${incident.acknowledgedByName || "team member"}`
+                      : "Awaiting acknowledgement"}
+                  </span>
+                  <span
+                    className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
+                    style={{
+                      color: incident.ownerMemberName ? "var(--foreground)" : "var(--muted)",
+                      background: "var(--background-secondary)",
+                    }}
+                  >
+                    {incident.ownerMemberName ? `On-call: ${incident.ownerMemberName}` : "On-call unassigned"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 mt-1.5 text-[11px]" style={{ color: "var(--muted-2)" }}>
+                  <span style={{ color: statusInfo.color }} className="font-medium">{statusInfo.label}</span>
+                  <span>&middot;</span>
+                  <span>Started {new Date(incident.createdAt).toLocaleString()}</span>
+                  {incident.acknowledgedAt && (
+                    <>
+                      <span>&middot;</span>
+                      <span>Acknowledged {new Date(incident.acknowledgedAt).toLocaleString()}</span>
+                    </>
+                  )}
+                  {incident.resolvedAt && (
+                    <>
+                      <span>&middot;</span>
+                      <span>Resolved {new Date(incident.resolvedAt).toLocaleString()}</span>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           );

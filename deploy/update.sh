@@ -16,6 +16,18 @@ NC='\033[0m'
 log()  { echo -e "${GREEN}[✓]${NC} $1"; }
 info() { echo -e "${CYAN}[→]${NC} $1"; }
 
+RUNNER_MODE="scheduler"
+DATABASE_PATH_VALUE=""
+DATABASE_BACKUP_DIR_VALUE=""
+if [ -f ".env.local" ]; then
+  ENV_RUNNER_MODE=$(grep -E '^CHECK_RUNNER_MODE=' .env.local | tail -n 1 | cut -d '=' -f 2- | tr -d '[:space:]' || true)
+  if [ -n "${ENV_RUNNER_MODE}" ]; then
+    RUNNER_MODE="${ENV_RUNNER_MODE}"
+  fi
+  DATABASE_PATH_VALUE=$(grep -E '^DATABASE_PATH=' .env.local | tail -n 1 | cut -d '=' -f 2- | tr -d '[:space:]' || true)
+  DATABASE_BACKUP_DIR_VALUE=$(grep -E '^DATABASE_BACKUP_DIR=' .env.local | tail -n 1 | cut -d '=' -f 2- | tr -d '[:space:]' || true)
+fi
+
 echo ""
 echo "═══════════════════════════════════"
 echo "  Updating Status Dashboard..."
@@ -42,6 +54,12 @@ info "Restarting application..."
 pm2 restart status-dashboard
 log "Application restarted"
 
+if [ "${RUNNER_MODE}" != "cron" ] && crontab -l 2>/dev/null | grep -q "cron-checker.ts"; then
+  info "Removing legacy cron health checker to avoid duplicate monitoring runs..."
+  { (crontab -l 2>/dev/null | grep -v "cron-checker.ts") || true; } | crontab -
+  log "Legacy cron health checker removed"
+fi
+
 # Verify
 sleep 3
 if curl -sf http://localhost:3000/api/health-status > /dev/null 2>&1; then
@@ -49,6 +67,14 @@ if curl -sf http://localhost:3000/api/health-status > /dev/null 2>&1; then
 else
   echo -e "\033[0;31m[✗] Health check failed. Check logs: pm2 logs\033[0m"
   exit 1
+fi
+
+if [ -n "${DATABASE_PATH_VALUE}" ]; then
+  log "SQLite database path: ${DATABASE_PATH_VALUE}"
+fi
+
+if [ -n "${DATABASE_BACKUP_DIR_VALUE}" ]; then
+  log "SQLite backup dir: ${DATABASE_BACKUP_DIR_VALUE}"
 fi
 
 echo ""

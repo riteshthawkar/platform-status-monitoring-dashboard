@@ -56,6 +56,30 @@ export interface HealthCheckResult {
   errorMessage: string | null;
 }
 
+export interface ServiceOwner {
+  serviceId: string;
+  memberId: number | null;
+  memberName: string | null;
+  memberEmail: string | null;
+  memberRole: string | null;
+  updatedAt: string;
+}
+
+export interface MaintenanceWindow {
+  id?: number;
+  serviceId: string;
+  serviceName?: string;
+  serviceGroup?: string;
+  title: string;
+  notes: string | null;
+  startsAt: string;
+  endsAt: string;
+  createdAt: string;
+  cancelledAt: string | null;
+  isActive?: boolean;
+  isUpcoming?: boolean;
+}
+
 export interface ServiceWithStatus extends ServiceConfig {
   currentStatus: ServiceStatus;
   lastChecked: string | null;
@@ -64,6 +88,8 @@ export interface ServiceWithStatus extends ServiceConfig {
   uptimePercent7d: number;
   uptimePercent30d: number;
   recentChecks: HealthCheckResult[];
+  owner: ServiceOwner | null;
+  activeMaintenance: MaintenanceWindow | null;
 }
 
 export interface Incident {
@@ -73,6 +99,13 @@ export interface Incident {
   description: string;
   status: "investigating" | "identified" | "monitoring" | "resolved";
   severity: "minor" | "major" | "critical";
+  ownerMemberId: number | null;
+  ownerMemberName?: string | null;
+  ownerMemberEmail?: string | null;
+  acknowledgedAt: string | null;
+  acknowledgedByMemberId: number | null;
+  acknowledgedByName?: string | null;
+  acknowledgedByEmail?: string | null;
   createdAt: string;
   updatedAt: string;
   resolvedAt: string | null;

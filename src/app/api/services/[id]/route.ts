@@ -6,6 +6,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceById } from "@/lib/services-config";
 import { checkServiceAndStore } from "@/lib/health-checker";
+import { eventBus } from "@/lib/event-bus";
+import { withAuth } from "@/lib/auth";
 import {
   getLatestCheck,
   getRecentChecks,
@@ -45,7 +47,7 @@ export async function GET(
   });
 }
 
-export async function POST(
+export const POST = withAuth(async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -57,9 +59,10 @@ export async function POST(
   }
 
   const result = await checkServiceAndStore(service);
+  eventBus.broadcastDashboardRefresh();
 
   return NextResponse.json({
     success: true,
     result,
   });
-}
+});

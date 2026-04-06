@@ -2,11 +2,15 @@
 # ============================================================
 # Setup cron job for background health checks
 # Run: bash src/scripts/setup-cron.sh
+#
+# This is an alternative to the in-process scheduler.
+# If you install cron, set CHECK_RUNNER_MODE=cron in .env.local.
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG_DIR="$PROJECT_DIR/logs"
+ENV_FILE="$PROJECT_DIR/.env.local"
 
 echo "📦 Platform Status Monitor — Cron Setup"
 echo "   Project: $PROJECT_DIR"
@@ -27,7 +31,7 @@ if crontab -l 2>/dev/null | grep -q "cron-checker.ts"; then
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         # Remove old entry, add new one
-        (crontab -l 2>/dev/null | grep -v "cron-checker.ts"; echo "$CRON_CMD") | crontab -
+        { (crontab -l 2>/dev/null | grep -v "cron-checker.ts") || true; echo "$CRON_CMD"; } | crontab -
         echo "✅ Cron job updated!"
     else
         echo "Skipped."
@@ -40,6 +44,16 @@ else
 fi
 
 echo ""
+if [ -f "$ENV_FILE" ]; then
+    if grep -q "^CHECK_RUNNER_MODE=" "$ENV_FILE"; then
+        sed -i.bak 's/^CHECK_RUNNER_MODE=.*/CHECK_RUNNER_MODE=cron/' "$ENV_FILE"
+    else
+        echo "CHECK_RUNNER_MODE=cron" >> "$ENV_FILE"
+    fi
+    echo "🛠  Updated $ENV_FILE to CHECK_RUNNER_MODE=cron"
+    echo ""
+fi
+
 echo "📋 Current crontab:"
 crontab -l | grep "cron-checker"
 echo ""

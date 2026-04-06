@@ -16,7 +16,7 @@
 #   2. Installs Node.js 20 LTS, PM2, build tools
 #   3. Clones the repo and builds the app
 #   4. Sets up Nginx reverse proxy with SSL (Let's Encrypt)
-#   5. Installs the cron job for background health checks
+#   5. Configures the in-process health check scheduler
 #   6. Starts the app via PM2 with auto-restart
 #   7. Configures UFW firewall
 # ============================================================
@@ -27,9 +27,13 @@ set -euo pipefail
 APP_NAME="status-dashboard"
 APP_USER="dashuser"
 APP_DIR="/home/${APP_USER}/app"
+DATA_DIR="/home/${APP_USER}/status-dashboard-data"
+BACKUP_DIR="/home/${APP_USER}/status-dashboard-backups"
+DB_PATH="${DATA_DIR}/status.db"
 REPO_URL="https://github.com/riteshthawkar/platform-status-monitoring-dashboard.git"
 NODE_VERSION="20"
 PORT=3000
+BACKUP_CRON="15 2 * * *"
 
 # Colors
 RED='\033[0;31m'
@@ -62,7 +66,7 @@ log "System updated"
 # ─── Step 2: Install essential packages ──────────────────────
 info "Installing essential packages..."
 apt-get install -y -qq \
-  curl wget git build-essential python3 \
+  curl wget git build-essential python3 sqlite3 \
   nginx certbot python3-certbot-nginx \
   ufw htop
 log "Essential packages installed"
@@ -107,8 +111,8 @@ su - "${APP_USER}" -c "cd ${APP_DIR} && npm run build"
 log "Application built successfully"
 
 # ─── Step 8: Create directories ──────────────────────────────
-su - "${APP_USER}" -c "mkdir -p ${APP_DIR}/data ${APP_DIR}/logs"
-log "Data and logs directories created"
+su - "${APP_USER}" -c "mkdir -p ${DATA_DIR} ${BACKUP_DIR} ${APP_DIR}/logs"
+log "Persistent data, backup, and logs directories created"
 
 # ─── Step 9: Create .env.local from example ──────────────────
 if [ ! -f "${APP_DIR}/.env.local" ]; then
@@ -117,6 +121,27 @@ if [ ! -f "${APP_DIR}/.env.local" ]; then
   warn "IMPORTANT: Edit ${APP_DIR}/.env.local with your Slack/Email credentials"
 else
   warn ".env.local already exists, not overwriting"
+fi
+
+if ! su - "${APP_USER}" -c "grep -q '^DATABASE_PATH=' ${APP_DIR}/.env.local"; then
+  info "Configuring persistent SQLite database path..."
+  su - "${APP_USER}" -c "printf '\nDATABASE_PATH=%s\n' '${DB_PATH}' >> ${APP_DIR}/.env.local"
+  log "DATABASE_PATH set to ${DB_PATH}"
+else
+  warn "DATABASE_PATH already configured in .env.local, leaving as-is"
+fi
+
+if ! su - "${APP_USER}" -c "grep -q '^DATABASE_BACKUP_DIR=' ${APP_DIR}/.env.local"; then
+  info "Configuring persistent backup directory..."
+  su - "${APP_USER}" -c "printf 'DATABASE_BACKUP_DIR=%s\n' '${BACKUP_DIR}' >> ${APP_DIR}/.env.local"
+  log "DATABASE_BACKUP_DIR set to ${BACKUP_DIR}"
+else
+  warn "DATABASE_BACKUP_DIR already configured in .env.local, leaving as-is"
+fi
+
+ENV_BACKUP_CRON=$(su - "${APP_USER}" -c "grep -E '^DATABASE_BACKUP_CRON=' ${APP_DIR}/.env.local | tail -n 1 | cut -d '=' -f 2-" || true)
+if [ -n "${ENV_BACKUP_CRON}" ]; then
+  BACKUP_CRON="${ENV_BACKUP_CRON}"
 fi
 
 # ─── Step 10: Setup PM2 ecosystem ───────────────────────────
@@ -128,17 +153,15 @@ su - "${APP_USER}" -c "pm2 save"
 pm2 startup systemd -u "${APP_USER}" --hp "/home/${APP_USER}"
 log "PM2 configured with auto-restart on boot"
 
-# ─── Step 11: Setup cron job ────────────────────────────────
-info "Installing health check cron job..."
-CRON_CMD="*/2 * * * * cd ${APP_DIR} && /usr/bin/node node_modules/.bin/tsx src/scripts/cron-checker.ts >> ${APP_DIR}/logs/cron.log 2>&1"
+# ─── Step 11: Setup backup + log rotation cron ──────────────
+info "Installing nightly database backup cron..."
+BACKUP_CMD="${BACKUP_CRON} cd ${APP_DIR} && bash src/scripts/backup-database.sh >> ${APP_DIR}/logs/database-backup.log 2>&1"
+{ (su - "${APP_USER}" -c "crontab -l 2>/dev/null" | grep -v "backup-database.sh") || true; echo "${BACKUP_CMD}"; } | su - "${APP_USER}" -c "crontab -"
+log "Nightly database backup cron installed (${BACKUP_CRON})"
 
-# Install cron for the app user
-(su - "${APP_USER}" -c "crontab -l 2>/dev/null" | grep -v "cron-checker.ts"; echo "${CRON_CMD}") | su - "${APP_USER}" -c "crontab -"
-log "Cron job installed (every 2 minutes)"
-
-# Also add a daily log rotation cron
+info "Installing log rotation cron..."
 ROTATE_CMD="0 0 * * * find ${APP_DIR}/logs -name '*.log' -size +50M -exec truncate -s 0 {} \;"
-(su - "${APP_USER}" -c "crontab -l 2>/dev/null" | grep -v "truncate"; echo "${ROTATE_CMD}") | su - "${APP_USER}" -c "crontab -"
+{ (su - "${APP_USER}" -c "crontab -l 2>/dev/null" | grep -v "truncate") || true; echo "${ROTATE_CMD}"; } | su - "${APP_USER}" -c "crontab -"
 log "Log rotation cron installed (daily, >50MB)"
 
 # ─── Step 12: Configure Nginx ───────────────────────────────
@@ -209,15 +232,19 @@ echo "════════════════════════�
 echo ""
 echo "  Dashboard URL:  http://${DROPLET_IP}"
 echo "  App directory:  ${APP_DIR}"
+echo "  Database path:  ${DB_PATH}"
+echo "  Backup dir:     ${BACKUP_DIR}"
+echo "  Backup cron:    ${BACKUP_CRON}"
 echo "  PM2 status:     su - ${APP_USER} -c 'pm2 status'"
 echo "  App logs:       su - ${APP_USER} -c 'pm2 logs'"
-echo "  Cron logs:      tail -f ${APP_DIR}/logs/cron.log"
+echo "  Scheduler logs: su - ${APP_USER} -c 'pm2 logs status-dashboard'"
+echo "  Backup logs:    tail -f ${APP_DIR}/logs/database-backup.log"
 echo ""
 echo "─── Next Steps ─────────────────────────────────────────"
 echo ""
 echo "  1. Configure alerts:"
 echo "     nano ${APP_DIR}/.env.local"
-echo "     # Add SLACK_WEBHOOK_URL, SMTP_* settings"
+echo "     # Add DASHBOARD_USERNAME, DASHBOARD_PASSWORD, SLACK_WEBHOOK_URL, SMTP_* settings"
 echo "     su - ${APP_USER} -c 'cd ${APP_DIR} && pm2 restart all'"
 echo ""
 echo "  2. Add SSL (requires a domain name):"

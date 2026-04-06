@@ -3,11 +3,11 @@
 import { HealthCheckResult, ServiceStatus } from "@/types";
 
 const statusColors: Record<ServiceStatus, string> = {
-  operational: "bg-emerald-400",
-  degraded: "bg-amber-400",
-  down: "bg-red-400",
-  maintenance: "bg-indigo-400",
-  unknown: "bg-gray-600",
+  operational: "var(--color-operational)",
+  degraded: "var(--color-degraded)",
+  down: "var(--color-down)",
+  maintenance: "var(--color-maintenance)",
+  unknown: "var(--color-unknown)",
 };
 
 interface UptimeBarChartProps {
@@ -15,12 +15,11 @@ interface UptimeBarChartProps {
 }
 
 export default function UptimeBarChart({ checks }: UptimeBarChartProps) {
-  // Show the last 50 checks in chronological order (oldest first)
   const displayChecks = [...checks].reverse().slice(-50);
 
   if (displayChecks.length === 0) {
     return (
-      <div className="flex items-center justify-center h-6 text-xs text-gray-600">
+      <div className="flex items-center justify-center h-6 text-[11px]" style={{ color: "var(--muted-2)" }}>
         No check data yet
       </div>
     );
@@ -31,15 +30,16 @@ export default function UptimeBarChart({ checks }: UptimeBarChartProps) {
       {displayChecks.map((check, i) => (
         <div
           key={i}
-          className={`uptime-bar-segment flex-1 rounded-sm min-w-[3px] ${statusColors[check.status]}`}
+          className="uptime-bar-segment flex-1 rounded-sm min-w-[3px]"
           style={{
+            background: statusColors[check.status],
             height:
               check.status === "operational"
                 ? "100%"
                 : check.status === "degraded"
                   ? "60%"
                   : "30%",
-            opacity: check.status === "operational" ? 0.6 : 0.9,
+            opacity: check.status === "operational" ? 0.5 : 0.85,
           }}
           title={`${check.status} - ${check.responseTimeMs}ms - ${new Date(check.timestamp).toLocaleString()}`}
         />
@@ -48,7 +48,6 @@ export default function UptimeBarChart({ checks }: UptimeBarChartProps) {
   );
 }
 
-// 90-day bar chart for service detail pages
 interface DailyUptimeBarProps {
   bars: Array<{
     date: string;
@@ -62,7 +61,7 @@ interface DailyUptimeBarProps {
 export function DailyUptimeBar({ bars }: DailyUptimeBarProps) {
   if (bars.length === 0) {
     return (
-      <div className="flex items-center justify-center h-8 text-xs text-gray-600">
+      <div className="flex items-center justify-center h-8 text-[11px]" style={{ color: "var(--muted-2)" }}>
         No uptime data yet
       </div>
     );
@@ -73,10 +72,11 @@ export function DailyUptimeBar({ bars }: DailyUptimeBarProps) {
       {bars.map((bar, i) => (
         <div
           key={i}
-          className={`uptime-bar-segment flex-1 rounded-sm min-w-[2px] ${statusColors[bar.status]}`}
+          className="uptime-bar-segment flex-1 rounded-sm min-w-[2px]"
           style={{
+            background: statusColors[bar.status],
             height: `${Math.max(20, bar.uptimePercent)}%`,
-            opacity: bar.status === "operational" ? 0.5 : 0.9,
+            opacity: bar.status === "operational" ? 0.4 : 0.85,
           }}
           title={`${bar.date}: ${bar.uptimePercent}% uptime (${bar.totalChecks} checks, ${bar.failedChecks} failed)`}
         />

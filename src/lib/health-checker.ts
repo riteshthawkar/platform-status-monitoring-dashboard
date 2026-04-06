@@ -5,7 +5,7 @@
 
 import { ServiceConfig, ServiceStatus, HealthCheckResult } from "@/types";
 import { getEnabledServices } from "./services-config";
-import { insertHealthCheck, getRecentChecks, createIncident, getActiveIncidents, updateIncident } from "./database";
+import { insertHealthCheck, getRecentChecks, createIncident, getActiveIncidents, updateIncident, getActiveMaintenanceWindow } from "./database";
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
@@ -204,6 +204,10 @@ export async function checkServiceAndStore(service: ServiceConfig): Promise<Heal
  * - Auto-resolves when service comes back
  */
 function manageAutoIncidents(service: ServiceConfig, check: HealthCheckResult) {
+  if (getActiveMaintenanceWindow(service.id)) {
+    return;
+  }
+
   const activeIncidents = getActiveIncidents().filter((i) => i.serviceId === service.id);
 
   if (check.status === "down" || check.status === "degraded") {

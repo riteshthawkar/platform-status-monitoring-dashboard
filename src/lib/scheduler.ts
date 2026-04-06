@@ -2,7 +2,7 @@
 // In-Process Background Health Check Scheduler
 //
 // Replaces system cron for managed platforms (Render, Railway, Fly.io).
-// Runs every minute and checks each service according to its own
+// Runs every 30 seconds and checks each service according to its own
 // checkIntervalSeconds (30, 60, 120, 300 etc.) from services-config.
 // Activated automatically in production via instrumentation.ts.
 // ============================================================
@@ -19,6 +19,7 @@ import {
   updateIncident,
   cleanOldChecks,
   getUpcomingDeadlines,
+  getActiveMaintenanceWindow,
 } from "./database";
 import { processAlertsForResults, getAlertConfig, sendAssignmentEmail } from "./alerting";
 import { eventBus } from "./event-bus";
@@ -205,12 +206,7 @@ async function runHealthCheckCycle(): Promise<void> {
     // Rebuild the dashboard cache (used by API routes + SSE)
     // This runs the 153+ SQLite queries once, then all consumers read from cache.
     try {
-      const cached = eventBus.rebuildDashboardCache();
-
-      // Broadcast to connected SSE clients
-      if (eventBus.connectedClients > 0) {
-        eventBus.emitStatusUpdate(cached.services);
-      }
+      eventBus.broadcastDashboardRefresh();
     } catch (emitErr) {
       console.error("[Scheduler] Failed to rebuild cache / emit SSE update:", emitErr);
     }
@@ -225,6 +221,10 @@ async function runHealthCheckCycle(): Promise<void> {
  * Manage incidents with consecutive failure threshold.
  */
 function manageIncidents(serviceId: string, serviceName: string, check: HealthCheckResult) {
+  if (getActiveMaintenanceWindow(serviceId)) {
+    return;
+  }
+
   const activeIncidents = getActiveIncidents().filter((i) => i.serviceId === serviceId);
 
   if (check.status === "down" || check.status === "degraded") {
@@ -257,7 +257,7 @@ function manageIncidents(serviceId: string, serviceName: string, check: HealthCh
  * Start the background scheduler.
  * Safe to call multiple times — only starts once.
  *
- * The cron runs every minute so it can catch services with 30-second
+ * The cron runs every 30 seconds so it can catch services with 30-second
  * intervals on every tick.  Each service is only checked when its own
  * checkIntervalSeconds has elapsed since the last check.
  */
@@ -277,15 +277,15 @@ export function startScheduler(): void {
 
   console.log(`[Scheduler] ═══════════════════════════════════════════════`);
   console.log(`[Scheduler] Background health checker starting...`);
-  console.log(`[Scheduler] Cron tick: every 1 minute`);
+  console.log(`[Scheduler] Cron tick: every 30 seconds`);
   console.log(`[Scheduler] Services: ${services.length}`);
   console.log(`[Scheduler] Per-service intervals: ${intervals.map((i) => `${i}s`).join(", ")}`);
   console.log(`[Scheduler] Slack: ${alertConfig.slackConfigured ? "✅" : "❌"}`);
   console.log(`[Scheduler] Email: ${alertConfig.emailConfigured ? "✅" : "❌"}`);
   console.log(`[Scheduler] ═══════════════════════════════════════════════`);
 
-  // Schedule with node-cron: "*/1 * * * *" = every 1 minute
-  cron.schedule("*/1 * * * *", () => {
+  // Schedule with node-cron: "*/30 * * * * *" = every 30 seconds
+  cron.schedule("*/30 * * * * *", () => {
     runHealthCheckCycle();
   });
 
