@@ -67,6 +67,20 @@ export interface ServiceOwner {
   updatedAt: string;
 }
 
+export interface ServiceDeployment {
+  id?: number;
+  serviceId: string;
+  serviceName?: string;
+  serviceGroup?: string;
+  environment: string;
+  version: string;
+  commitSha: string | null;
+  deployedBy: string | null;
+  deployedAt: string;
+  notes: string | null;
+  createdAt: string;
+}
+
 export interface MaintenanceWindow {
   id?: number;
   serviceId: string;
@@ -92,6 +106,7 @@ export interface ServiceWithStatus extends ServiceConfig {
   recentChecks: HealthCheckResult[];
   owner: ServiceOwner | null;
   activeMaintenance: MaintenanceWindow | null;
+  latestDeployment: ServiceDeployment | null;
 }
 
 export interface Incident {

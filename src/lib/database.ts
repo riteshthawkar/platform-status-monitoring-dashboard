@@ -5,7 +5,7 @@
 
 import Database from "better-sqlite3";
 import path from "path";
-import { HealthCheckResult, Incident, IncidentUpdate, UptimeBar, TeamMember, IncidentAssignment, AssignmentStatus, ServiceStatus, ServiceOwner, MaintenanceWindow } from "@/types";
+import { HealthCheckResult, Incident, IncidentUpdate, UptimeBar, TeamMember, IncidentAssignment, AssignmentStatus, ServiceStatus, ServiceOwner, MaintenanceWindow, ServiceDeployment } from "@/types";
 
 // Use DATABASE_PATH env var for persistent disk (Render/Railway/Fly.io)
 // Falls back to local ./data/ for development
@@ -157,6 +157,25 @@ function initializeDatabase(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_maintenance_active
       ON maintenance_windows(starts_at, ends_at, cancelled_at);
+
+    -- Deployment history
+    CREATE TABLE IF NOT EXISTS service_deployments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service_id TEXT NOT NULL,
+      environment TEXT NOT NULL DEFAULT 'production',
+      version TEXT NOT NULL,
+      commit_sha TEXT,
+      deployed_by TEXT,
+      deployed_at TEXT NOT NULL,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_service_deployments_service_time
+      ON service_deployments(service_id, deployed_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_service_deployments_created
+      ON service_deployments(created_at DESC);
 
     -- Team members
     CREATE TABLE IF NOT EXISTS team_members (
@@ -1087,6 +1106,108 @@ export function getActiveMaintenanceWindow(serviceId: string): MaintenanceWindow
 
 export function getActiveMaintenanceWindows(): MaintenanceWindow[] {
   return getMaintenanceWindows({ activeOnly: true });
+}
+
+// ─── Deployment Queries ──────────────────────────────────────
+
+export function createServiceDeployment(deployment: {
+  serviceId: string;
+  environment: string;
+  version: string;
+  commitSha?: string | null;
+  deployedBy?: string | null;
+  deployedAt: string;
+  notes?: string | null;
+}): number {
+  const db = getDb();
+  const result = db
+    .prepare(
+      `INSERT INTO service_deployments
+         (service_id, environment, version, commit_sha, deployed_by, deployed_at, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      deployment.serviceId,
+      deployment.environment,
+      deployment.version,
+      deployment.commitSha ?? null,
+      deployment.deployedBy ?? null,
+      deployment.deployedAt,
+      deployment.notes ?? null
+    );
+
+  return result.lastInsertRowid as number;
+}
+
+export function getServiceDeployments(options?: {
+  serviceId?: string;
+  environment?: string;
+  limit?: number;
+}): ServiceDeployment[] {
+  const db = getDb();
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  if (options?.serviceId) {
+    conditions.push("sd.service_id = ?");
+    values.push(options.serviceId);
+  }
+
+  if (options?.environment) {
+    conditions.push("sd.environment = ?");
+    values.push(options.environment);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limitClause = options?.limit ? "LIMIT ?" : "";
+  if (options?.limit) values.push(options.limit);
+
+  return db
+    .prepare(
+      `SELECT
+         sd.id,
+         sd.service_id AS serviceId,
+         sd.environment,
+         sd.version,
+         sd.commit_sha AS commitSha,
+         sd.deployed_by AS deployedBy,
+         sd.deployed_at AS deployedAt,
+         sd.notes,
+         sd.created_at AS createdAt
+       FROM service_deployments sd
+       ${where}
+       ORDER BY datetime(sd.deployed_at) DESC, sd.id DESC
+       ${limitClause}`
+    )
+    .all(...values) as ServiceDeployment[];
+}
+
+export function getLatestDeployments(): ServiceDeployment[] {
+  const db = getDb();
+
+  return db
+    .prepare(
+      `SELECT
+         sd.id,
+         sd.service_id AS serviceId,
+         sd.environment,
+         sd.version,
+         sd.commit_sha AS commitSha,
+         sd.deployed_by AS deployedBy,
+         sd.deployed_at AS deployedAt,
+         sd.notes,
+         sd.created_at AS createdAt
+       FROM service_deployments sd
+       INNER JOIN (
+         SELECT service_id, MAX(datetime(deployed_at)) AS latest_deployed_at
+         FROM service_deployments
+         GROUP BY service_id
+       ) latest
+         ON latest.service_id = sd.service_id
+        AND latest.latest_deployed_at = datetime(sd.deployed_at)
+       ORDER BY datetime(sd.deployed_at) DESC, sd.id DESC`
+    )
+    .all() as ServiceDeployment[];
 }
 
 // ─── Team Member Queries ──────────────────────────────────────

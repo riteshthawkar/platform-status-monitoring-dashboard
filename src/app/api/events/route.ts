@@ -40,6 +40,7 @@ export async function GET(request: NextRequest) {
           services: cached.services,
           activeIncidents: cached.activeIncidents,
           activeMaintenanceWindows: cached.activeMaintenanceWindows,
+          recentDeployments: cached.recentDeployments,
         });
       } catch (err) {
         console.error("[SSE] Failed to send initial status:", err);
@@ -55,6 +56,7 @@ export async function GET(request: NextRequest) {
             services: cached.services,
             activeIncidents: cached.activeIncidents,
             activeMaintenanceWindows: cached.activeMaintenanceWindows,
+            recentDeployments: cached.recentDeployments,
           });
         } catch {
           // Ignore — client may have disconnected

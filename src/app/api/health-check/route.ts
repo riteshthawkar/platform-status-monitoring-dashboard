@@ -38,6 +38,7 @@ export async function GET(request: NextRequest) {
       services: cached.services,
       activeIncidents: cached.activeIncidents,
       activeMaintenanceWindows: cached.activeMaintenanceWindows,
+      recentDeployments: cached.recentDeployments,
     });
   } catch (error) {
     return NextResponse.json(

@@ -1,31 +1,49 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ElementType, type ReactNode } from "react";
-import { ServiceWithStatus, DashboardSummary } from "@/types";
-import OverallStatus from "./OverallStatus";
-import ServiceCard from "./ServiceCard";
-import IncidentsList from "./IncidentsList";
-import ProductTabs from "./ProductTabs";
-import ProductHeader from "./ProductHeader";
-import MaintenanceList from "./MaintenanceList";
-import { useDashboardData } from "./useDashboardData";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { formatDistanceToNowStrict } from "date-fns";
 import {
-  RefreshCw,
   Activity,
+  ArrowUpRight,
+  Clock3,
+  ExternalLink,
+  GitBranch,
+  RefreshCw,
   Search,
-  Radio,
+  Server,
+  TrendingUp,
+  TriangleAlert,
+  UserRound,
   WifiOff,
-  Users,
-  AlertTriangle,
-  CheckCircle2,
   Zap,
 } from "lucide-react";
-import Link from "next/link";
+import { DashboardSummary, ServiceDeployment, ServiceWithStatus } from "@/types";
+import AppHeader from "./AppHeader";
+import IncidentsList from "./IncidentsList";
+import MaintenanceList from "./MaintenanceList";
+import ProductTabs from "./ProductTabs";
+import ServiceCard from "./ServiceCard";
+import StatusBadge from "./StatusBadge";
+import { useDashboardData } from "./useDashboardData";
 import { categoryLabels, categoryOrder, getGroupById, serviceGroups } from "@/lib/services-config";
+import { getGroupNavIcon } from "@/lib/navigation-icons";
+import {
+  accentButtonClass,
+  cn,
+  foregroundTextClass,
+  mutedText2Class,
+  mutedTextClass,
+  pageClass,
+  toneChipClasses,
+  toneTextClasses,
+} from "@/lib/ui";
 
 interface DashboardProps {
   forcedGroupId?: string;
 }
+
+type Tone = "foreground" | "operational" | "degraded" | "down" | "maintenance";
 
 export default function Dashboard({ forcedGroupId }: DashboardProps) {
   const {
@@ -44,188 +62,107 @@ export default function Dashboard({ forcedGroupId }: DashboardProps) {
   const [activeTab, setActiveTab] = useState(forcedGroupId || "all");
 
   useEffect(() => {
-    if (forcedGroupId) {
-      setActiveTab(forcedGroupId);
-    }
+    if (forcedGroupId) setActiveTab(forcedGroupId);
   }, [forcedGroupId]);
 
-  // Compute group counts for tab badges
   const groupCounts = useMemo(() => {
     if (!data) return {};
-    const counts: Record<string, { total: number; operational: number; down: number; degraded: number }> = {};
-
-    counts["all"] = {
-      total: data.services.length,
-      operational: data.services.filter((s) => s.currentStatus === "operational").length,
-      down: data.services.filter((s) => s.currentStatus === "down").length,
-      degraded: data.services.filter((s) => s.currentStatus === "degraded").length,
+    const counts: Record<string, { total: number; operational: number; down: number; degraded: number }> = {
+      all: {
+        total: data.services.length,
+        operational: data.services.filter((s) => s.currentStatus === "operational").length,
+        down: data.services.filter((s) => s.currentStatus === "down").length,
+        degraded: data.services.filter((s) => s.currentStatus === "degraded").length,
+      },
     };
-
     for (const group of serviceGroups) {
-      const groupServices = data.services.filter((s) => s.group === group.id);
+      const services = data.services.filter((s) => s.group === group.id);
       counts[group.id] = {
-        total: groupServices.length,
-        operational: groupServices.filter((s) => s.currentStatus === "operational").length,
-        down: groupServices.filter((s) => s.currentStatus === "down").length,
-        degraded: groupServices.filter((s) => s.currentStatus === "degraded").length,
+        total: services.length,
+        operational: services.filter((s) => s.currentStatus === "operational").length,
+        down: services.filter((s) => s.currentStatus === "down").length,
+        degraded: services.filter((s) => s.currentStatus === "degraded").length,
       };
     }
-
     return counts;
   }, [data]);
 
   const scopedServices = useMemo(() => {
     if (!data) return [];
-    if (activeTab === "all") return data.services;
-    return data.services.filter((service) => service.group === activeTab);
+    return activeTab === "all" ? data.services : data.services.filter((s) => s.group === activeTab);
   }, [data, activeTab]);
 
   const filteredServices = useMemo(() => {
-    if (!scopedServices.length) return [];
-
-    return scopedServices.filter((s) => {
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        if (
-          !s.name.toLowerCase().includes(q) &&
-          !s.description.toLowerCase().includes(q) &&
-          !s.id.toLowerCase().includes(q)
-        )
-          return false;
-      }
-
-      return true;
-    });
+    if (!searchQuery) return scopedServices;
+    const q = searchQuery.toLowerCase();
+    return scopedServices.filter((s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q) || s.id.toLowerCase().includes(q));
   }, [scopedServices, searchQuery]);
 
   const groupedServices = useMemo(() => {
     return categoryOrder
-      .map((cat) => ({
-        category: cat,
-        label: categoryLabels[cat],
-        services: filteredServices.filter((s) => s.category === cat),
-      }))
-      .filter((group) => group.services.length > 0);
+      .map((cat) => ({ category: cat, label: categoryLabels[cat], services: filteredServices.filter((s) => s.category === cat) }))
+      .filter((g) => g.services.length > 0);
   }, [filteredServices]);
 
   const scopedIncidents = useMemo(() => {
     if (!data) return [];
     if (activeTab === "all") return data.activeIncidents;
-    const groupServiceIds = data.services.filter((s) => s.group === activeTab).map((s) => s.id);
-    return data.activeIncidents.filter((i) => groupServiceIds.includes(i.serviceId));
+    const ids = new Set(data.services.filter((s) => s.group === activeTab).map((s) => s.id));
+    return data.activeIncidents.filter((i) => ids.has(i.serviceId));
   }, [data, activeTab]);
 
   const scopedMaintenance = useMemo(() => {
     if (!data) return [];
     if (activeTab === "all") return data.activeMaintenanceWindows;
-    return data.activeMaintenanceWindows.filter((window) => window.serviceGroup === activeTab);
+    return data.activeMaintenanceWindows.filter((w) => w.serviceGroup === activeTab);
   }, [data, activeTab]);
 
   const scopedSummary = useMemo((): DashboardSummary | null => {
     if (!data) return null;
-
     if (activeTab === "all") return data.summary;
-
-    const services = data.services.filter((s) => s.group === activeTab);
-    const statusCounts = services.reduce(
-      (acc, s) => {
-        acc[s.currentStatus] = (acc[s.currentStatus] || 0) + 1;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
-
+    const counts = scopedServices.reduce((acc, s) => { acc[s.currentStatus] = (acc[s.currentStatus] || 0) + 1; return acc; }, {} as Record<string, number>);
     let overallStatus: DashboardSummary["overallStatus"] = "operational";
-    if (statusCounts["down"] > 0) overallStatus = "down";
-    else if (statusCounts["degraded"] > 0) overallStatus = "degraded";
-    else if (statusCounts["maintenance"] > 0) overallStatus = "maintenance";
-
+    if (counts.down > 0) overallStatus = "down";
+    else if (counts.degraded > 0) overallStatus = "degraded";
+    else if (counts.maintenance > 0) overallStatus = "maintenance";
+    else if (counts.unknown > 0) overallStatus = "unknown";
     return {
-      totalServices: services.length,
-      operational: statusCounts["operational"] || 0,
-      degraded: statusCounts["degraded"] || 0,
-      down: statusCounts["down"] || 0,
-      maintenance: statusCounts["maintenance"] || 0,
+      totalServices: scopedServices.length,
+      operational: counts.operational || 0,
+      degraded: counts.degraded || 0,
+      down: counts.down || 0,
+      maintenance: counts.maintenance || 0,
       overallStatus,
       lastUpdated: data.summary.lastUpdated,
     };
-  }, [data, activeTab]);
+  }, [data, activeTab, scopedServices]);
 
   const activeGroup = activeTab !== "all" ? getGroupById(activeTab) || null : null;
-  const activeGroupServices = activeGroup ? scopedServices : [];
-  const attentionServices = useMemo(
-    () => scopedServices.filter((service) => service.currentStatus === "down" || service.currentStatus === "degraded"),
-    [scopedServices]
-  );
-  const ownerCoverageCount = useMemo(
-    () => scopedServices.filter((service) => service.owner?.memberId).length,
-    [scopedServices]
-  );
-  const ownerCoveragePercent = scopedServices.length > 0
-    ? Math.round((ownerCoverageCount / scopedServices.length) * 100)
-    : 0;
-  const avgLatency = useMemo(() => {
-    const responseTimes = scopedServices
-      .map((service) => service.lastResponseTime)
-      .filter((time): time is number => time !== null);
-
-    if (responseTimes.length === 0) return null;
-    return Math.round(responseTimes.reduce((sum, time) => sum + time, 0) / responseTimes.length);
-  }, [scopedServices]);
-  const avgUptime30d = useMemo(() => {
-    if (scopedServices.length === 0) return 0;
-    return Math.round((scopedServices.reduce((sum, service) => sum + service.uptimePercent30d, 0) / scopedServices.length) * 100) / 100;
-  }, [scopedServices]);
-  const watchlist = useMemo(() => {
-    return [...scopedServices]
-      .sort((a, b) => getWatchScore(b) - getWatchScore(a))
-      .filter((service) => getWatchScore(service) > 0)
-      .slice(0, 5);
-  }, [scopedServices]);
-  const productPulse = useMemo(() => {
-    if (!data) return [];
-
-    const groupsInScope = activeTab === "all"
-      ? serviceGroups
-      : serviceGroups.filter((group) => group.id === activeTab);
-
-    return groupsInScope
-      .map((group) => {
-        const services = data.services.filter((service) => service.group === group.id);
-        if (services.length === 0) return null;
-
-        const down = services.filter((service) => service.currentStatus === "down").length;
-        const degraded = services.filter((service) => service.currentStatus === "degraded").length;
-        const maintenance = services.filter((service) => service.currentStatus === "maintenance").length;
-        const healthy = services.filter((service) => service.currentStatus === "operational").length;
-
-        return {
-          id: group.id,
-          name: group.shortName,
-          total: services.length,
-          down,
-          degraded,
-          maintenance,
-          healthy,
-        };
-      })
-      .filter((group): group is {
-        id: string;
-        name: string;
-        total: number;
-        down: number;
-        degraded: number;
-        maintenance: number;
-        healthy: number;
-      } => group !== null);
-  }, [data, activeTab]);
+  const attentionServices = scopedServices.filter((s) => s.currentStatus === "down" || s.currentStatus === "degraded");
+  const ownerCoverageCount = scopedServices.filter((s) => s.owner?.memberId).length;
+  const ownerCoveragePercent = scopedServices.length > 0 ? Math.round((ownerCoverageCount / scopedServices.length) * 100) : 0;
+  const avgLatency = (() => {
+    const rts = scopedServices.map((s) => s.lastResponseTime).filter((t): t is number => t !== null);
+    return rts.length === 0 ? null : Math.round(rts.reduce((sum, t) => sum + t, 0) / rts.length);
+  })();
+  const avgUptime30d = scopedServices.length > 0
+    ? Math.round((scopedServices.reduce((sum, s) => sum + s.uptimePercent30d, 0) / scopedServices.length) * 100) / 100
+    : 100;
+  const watchlist = [...scopedServices]
+    .sort((a, b) => getWatchScore(b) - getWatchScore(a))
+    .filter((s) => getWatchScore(s) > 0)
+    .slice(0, 5);
+  const latestDeployment = scopedServices
+    .map((service) => service.latestDeployment)
+    .filter((deployment): deployment is ServiceDeployment => !!deployment)
+    .sort((a, b) => new Date(b.deployedAt).getTime() - new Date(a.deployedAt).getTime())[0] ?? null;
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--background)" }}>
-        <div className="flex items-center gap-3" style={{ color: "var(--muted)" }}>
-          <RefreshCw className="w-4 h-4 animate-spin" />
-          <span className="text-sm">Loading status...</span>
+      <div className={cn(pageClass, "flex items-center justify-center py-20")}>
+        <div className={cn("flex items-center gap-3 text-sm", mutedTextClass)}>
+          <RefreshCw className="h-4 w-4 animate-spin" />
+          Loading dashboard...
         </div>
       </div>
     );
@@ -233,15 +170,11 @@ export default function Dashboard({ forcedGroupId }: DashboardProps) {
 
   if (error && !data) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--background)" }}>
-        <div className="text-center">
-          <p className="text-sm mb-2" style={{ color: "var(--color-down)" }}>Failed to load dashboard</p>
-          <p className="text-xs mb-4" style={{ color: "var(--muted)" }}>{error}</p>
-          <button
-            onClick={fetchStatus}
-            className="px-3 py-1.5 rounded-md text-xs transition-colors"
-            style={{ background: "var(--card)", color: "var(--foreground)", border: "1px solid var(--border)" }}
-          >
+      <div className={cn(pageClass, "flex items-center justify-center py-20")}>
+        <div className="w-full max-w-md rounded-2xl border border-[color:var(--border)] bg-[var(--card)] p-6 text-center">
+          <p className={cn("text-sm font-medium", toneTextClasses.down)}>Failed to load dashboard</p>
+          <p className={cn("mt-2 text-xs leading-6", mutedTextClass)}>{error}</p>
+          <button onClick={fetchStatus} className={cn("mt-5 px-4 py-2 text-xs font-medium", accentButtonClass)}>
             Retry
           </button>
         </div>
@@ -251,452 +184,306 @@ export default function Dashboard({ forcedGroupId }: DashboardProps) {
 
   if (!data || !scopedSummary) return null;
 
+  const ScopeIcon = activeGroup ? getGroupNavIcon(activeGroup.id) : Activity;
+  const owners = [...new Set(scopedServices.map((s) => s.owner?.memberName).filter(Boolean))];
+
   return (
-    <div className="min-h-screen" style={{ background: "var(--background)" }}>
-      {/* Header */}
-      <header
-        className="sticky top-0 z-50 backdrop-blur-xl"
-        style={{ background: "rgba(10, 10, 11, 0.85)", borderBottom: "1px solid var(--border)" }}
-      >
-        <div className="max-w-[1380px] mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2.5">
-            <Activity className="w-[18px] h-[18px]" style={{ color: "var(--accent)" }} />
-            <div>
-              <h1 className="text-sm font-semibold leading-none" style={{ color: "var(--foreground)" }}>Platform Status</h1>
-              <p className="text-[11px] mt-1" style={{ color: "var(--muted-2)" }}>
-                Operations dashboard for startup projects and services
-              </p>
-            </div>
-          </div>
+    <div className={pageClass}>
+      <AppHeader />
 
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            {/* Team link */}
-                <Link
-                  href="/"
-                  className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors"
-                  style={{ color: "var(--muted)", border: "1px solid var(--border)" }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = "var(--card-hover)";
-                    e.currentTarget.style.borderColor = "var(--border-hover)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = "transparent";
-                    e.currentTarget.style.borderColor = "var(--border)";
-                  }}
-                >
-                  Projects
-                </Link>
-
-                <Link
-                  href="/team"
-                  className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md transition-colors"
-                  style={{ color: "var(--muted)", border: "1px solid var(--border)" }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--card-hover)";
-                e.currentTarget.style.borderColor = "var(--border-hover)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "transparent";
-                e.currentTarget.style.borderColor = "var(--border)";
-              }}
-            >
-              <Users className="w-3.5 h-3.5" />
-              Team
-            </Link>
-
-            {/* Connection indicator */}
-            {connectionMode === "live" ? (
-              <span className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md" style={{ color: "var(--color-operational)" }}>
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: "var(--color-operational)" }} />
-                  <span className="relative inline-flex rounded-full h-1.5 w-1.5" style={{ background: "var(--color-operational)" }} />
-                </span>
-                Live
-              </span>
-            ) : connectionMode === "connecting" ? (
-              <span className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md" style={{ color: "var(--color-degraded)" }}>
-                <RefreshCw className="w-3 h-3 animate-spin" />
-                Connecting
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md" style={{ color: "var(--muted)" }}>
-                <WifiOff className="w-3 h-3" />
-                Polling
-              </span>
+      <main className="space-y-5">
+        {/* Controls bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {activeGroup && (
+              <Link href="/" className="rounded-xl bg-[var(--surface-glass-soft)] px-3.5 py-2 text-xs font-medium text-[var(--muted)] transition-colors hover:text-[var(--foreground)]">
+                Portfolio
+              </Link>
             )}
-
-            {/* Auto-refresh toggle */}
+            <ConnectionBadge mode={connectionMode} />
             <button
               onClick={() => setAutoRefresh(!autoRefresh)}
-              className="text-xs px-2.5 py-1.5 rounded-md transition-colors"
-              style={{
-                color: autoRefresh ? "var(--color-operational)" : "var(--muted)",
-                border: `1px solid ${autoRefresh ? "rgba(61, 214, 140, 0.15)" : "var(--border)"}`,
-                background: autoRefresh ? "rgba(61, 214, 140, 0.06)" : "transparent",
-              }}
-            >
-              {autoRefresh ? "Auto ON" : "Auto OFF"}
-            </button>
-
-            {/* Check All */}
-            <button
-              onClick={triggerCheck}
-              disabled={isChecking}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors disabled:opacity-40"
-              style={{ background: "var(--accent)", color: "#fff" }}
-              onMouseEnter={(e) => { if (!isChecking) e.currentTarget.style.background = "var(--accent-hover)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = "var(--accent)"; }}
-            >
-              <RefreshCw className={`w-3 h-3 ${isChecking ? "animate-spin" : ""}`} />
-              {isChecking ? "Checking..." : "Check All"}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-[1380px] mx-auto px-4 sm:px-6 py-6">
-        <section
-          className="relative overflow-hidden rounded-[28px] p-5 sm:p-6 lg:p-7 mb-6"
-          style={{
-            background: "linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--card)) 0%, var(--card) 42%, color-mix(in srgb, var(--color-operational) 10%, var(--card)) 100%)",
-            border: "1px solid color-mix(in srgb, var(--accent) 16%, var(--border))",
-            boxShadow: "var(--shadow-soft)",
-          }}
-        >
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{
-              background: "radial-gradient(circle at top right, rgba(124, 102, 220, 0.24), transparent 34%), radial-gradient(circle at bottom left, rgba(61, 214, 140, 0.16), transparent 30%)",
-            }}
-          />
-
-          <div className="relative">
-            <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
-              <div className="max-w-3xl">
-                <div
-                  className="inline-flex items-center gap-2 rounded-full px-3 py-1 text-[11px] uppercase tracking-[0.18em]"
-                  style={{
-                    color: "var(--foreground)",
-                    background: "rgba(255, 255, 255, 0.06)",
-                    border: "1px solid rgba(255, 255, 255, 0.08)",
-                  }}
-                >
-                  <Radio className="w-3 h-3" style={{ color: connectionMode === "live" ? "var(--color-operational)" : "var(--color-degraded)" }} />
-                  {activeGroup ? `${activeGroup.shortName} Project Dashboard` : "Cross-Platform Operations Desk"}
-                </div>
-                <h2 className="text-[26px] leading-tight sm:text-[34px] font-semibold mt-4" style={{ color: "var(--foreground)" }}>
-                  {activeGroup ? `${activeGroup.name} Service Dashboard` : "Startup Platform Command Center"}
-                </h2>
-                <p className="text-sm sm:text-[15px] leading-7 mt-3 max-w-2xl" style={{ color: "var(--muted)" }}>
-                  {activeGroup
-                    ? "Inspect the live status of every monitored service, dependency, and maintenance window under this project."
-                    : "Monitor live health, active incidents, planned maintenance, and service ownership in a single operational view built for rapid response."}
-                </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 xl:min-w-[340px]">
-                <SignalCard
-                  label="Connection"
-                  value={connectionMode === "live" ? "Live" : connectionMode === "connecting" ? "Syncing" : "Polling"}
-                  tone={connectionMode === "live" ? "var(--color-operational)" : "var(--color-degraded)"}
-                  hint={connectionMode === "live" ? "SSE stream active" : connectionMode === "connecting" ? "Reconnecting to stream" : "30s fallback polling"}
-                />
-                <SignalCard
-                  label="Coverage"
-                  value={`${ownerCoveragePercent}%`}
-                  tone={ownerCoveragePercent >= 90 ? "var(--color-operational)" : ownerCoveragePercent >= 70 ? "var(--color-degraded)" : "var(--color-down)"}
-                  hint={`${ownerCoverageCount}/${scopedServices.length} services owned`}
-                />
-                <SignalCard
-                  label="Updated"
-                  value={new Date(scopedSummary.lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  tone="var(--foreground)"
-                  hint={new Date(scopedSummary.lastUpdated).toLocaleDateString([], { month: "short", day: "numeric" })}
-                />
-                <SignalCard
-                  label="Scope"
-                  value={`${scopedServices.length}`}
-                  tone="var(--foreground)"
-                  hint={activeGroup ? activeGroup.name : `${serviceGroups.length} product groups`}
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <MetricCard
-                label="Needs Attention"
-                value={String(attentionServices.length)}
-                description={attentionServices.length > 0 ? "Down or degraded services in scope" : "No degraded or down services"}
-                icon={AlertTriangle}
-                tone={attentionServices.length > 0 ? "var(--color-down)" : "var(--color-operational)"}
-              />
-              <MetricCard
-                label="Active Incidents"
-                value={String(scopedIncidents.length)}
-                description={scopedIncidents.length > 0 ? "Open investigation and monitoring items" : "No unresolved incidents"}
-                icon={Activity}
-                tone={scopedIncidents.length > 0 ? "var(--color-degraded)" : "var(--foreground)"}
-              />
-              <MetricCard
-                label="Avg Latency"
-                value={avgLatency !== null ? `${avgLatency}ms` : "--"}
-                description="Across services with a recent response"
-                icon={Zap}
-                tone={avgLatency !== null && avgLatency <= 500 ? "var(--color-operational)" : avgLatency !== null && avgLatency <= 1200 ? "var(--color-degraded)" : "var(--foreground)"}
-              />
-              <MetricCard
-                label="30d Fleet Uptime"
-                value={`${avgUptime30d}%`}
-                description="Average across the current scope"
-                icon={CheckCircle2}
-                tone={avgUptime30d >= 99.9 ? "var(--color-operational)" : avgUptime30d >= 99 ? "var(--color-degraded)" : "var(--color-down)"}
-              />
-            </div>
-
-            <div className="mt-6">
-              {activeGroup ? (
-                <ProductHeader group={activeGroup} services={activeGroupServices} />
-              ) : (
-                <OverallStatus summary={scopedSummary} />
+              className={cn(
+                "rounded-xl px-3.5 py-2 text-xs font-medium transition-colors",
+                autoRefresh
+                  ? "bg-[color-mix(in_srgb,var(--color-operational)_8%,transparent)] text-[var(--color-operational)]"
+                  : "bg-[var(--surface-glass-soft)] text-[var(--muted)]",
               )}
-            </div>
+            >
+              {autoRefresh ? "Auto refresh on" : "Auto refresh off"}
+            </button>
           </div>
-        </section>
 
-        {/* Product Tabs */}
+          <button
+            onClick={triggerCheck}
+            disabled={isChecking}
+            className={cn("inline-flex items-center gap-2 px-4 py-2.5 text-xs font-semibold disabled:opacity-50", accentButtonClass)}
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", isChecking && "animate-spin")} />
+            {isChecking ? "Checking..." : "Check all"}
+          </button>
+        </div>
+
+        {/* Scope tabs */}
         {!forcedGroupId && (
-          <ProductTabs
-            groups={serviceGroups}
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            groupCounts={groupCounts}
-          />
+          <ProductTabs groups={serviceGroups} activeTab={activeTab} onTabChange={setActiveTab} groupCounts={groupCounts} />
         )}
 
-        <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_360px]">
-          <section className="space-y-6 min-w-0">
-            {/* Search */}
-            <div
-              className="rounded-[22px] p-4 sm:p-5"
-              style={{
-                background: "color-mix(in srgb, var(--panel) 92%, transparent)",
-                border: "1px solid var(--border)",
-                boxShadow: "var(--shadow-soft)",
-              }}
-            >
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.18em]" style={{ color: "var(--muted-2)" }}>
-                    Service Grid
+        {/* Scope header card */}
+        <div className="rounded-2xl border border-[color:var(--border)] bg-[var(--card)] p-5 sm:p-6">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl bg-[var(--accent)] text-white accent-glow">
+                <ScopeIcon className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className={cn("text-xs font-medium", mutedTextClass)}>
+                    {activeGroup ? "Project status" : "Platform status"}
                   </p>
-                  <p className="text-sm mt-1" style={{ color: "var(--foreground)" }}>
-                    {filteredServices.length} visible services
-                  </p>
-                  <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
-                    Search endpoints, drill into categories, and trigger checks without leaving the operational view.
-                  </p>
+                  <StatusBadge status={scopedSummary.overallStatus} size="sm" />
                 </div>
-
-                <div className="relative w-full lg:max-w-[360px]">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: "var(--muted-2)" }} />
-                  <input
-                    type="text"
-                    placeholder={
-                      activeGroup
-                        ? `Search ${activeGroup.shortName} endpoints...`
-                        : "Search services..."
-                    }
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-9 pr-4 py-2.5 rounded-xl text-sm placeholder:text-[var(--muted-2)] focus:outline-none"
-                    style={{
-                      background: "var(--background-secondary)",
-                      border: "1px solid var(--border)",
-                      color: "var(--foreground)",
-                    }}
-                  />
+                <h2 className={cn("mt-2 text-xl font-bold tracking-tight sm:text-2xl", foregroundTextClass)}>
+                  {activeGroup ? activeGroup.name : "Platform Overview"}
+                </h2>
+                <p className={cn("mt-1 max-w-2xl text-sm", mutedTextClass)}>
+                  {activeGroup ? activeGroup.description : "Monitor service health, incidents, and ownership across the full platform."}
+                </p>
+                <div className={cn("mt-3 flex flex-wrap items-center gap-4 text-[11px]", mutedTextClass)}>
+                  {activeGroup?.baseUrl && (
+                    <a href={activeGroup.baseUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-[var(--foreground)]">
+                      <ExternalLink className="h-3 w-3" />
+                      {activeGroup.baseUrl.replace(/^https?:\/\//, "")}
+                    </a>
+                  )}
+                  {activeGroup?.repo && (
+                    <a href={`https://${activeGroup.repo}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-[var(--foreground)]">
+                      <GitBranch className="h-3 w-3" />
+                      {activeGroup.repo.replace("github.com/", "")}
+                    </a>
+                  )}
+                  {owners.length > 0 && (
+                    <span className="inline-flex items-center gap-1">
+                      <UserRound className="h-3 w-3" />
+                      {owners.join(", ")}
+                    </span>
+                  )}
+                  {latestDeployment && (
+                    <span className="inline-flex items-center gap-1">
+                      <GitBranch className="h-3 w-3" />
+                      {latestDeployment.version} · {formatDistanceToNowStrict(new Date(latestDeployment.deployedAt), { addSuffix: true })}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
+          </div>
+        </div>
 
-            {/* Service Groups */}
-            <div className="space-y-6">
-              {groupedServices.map((group) => {
-                const down = group.services.filter((service) => service.currentStatus === "down").length;
-                const degraded = group.services.filter((service) => service.currentStatus === "degraded").length;
+        {/* Stat cards */}
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <StatCard
+            icon={<Activity className="h-5 w-5" />}
+            iconBg="bg-[var(--accent-soft)] text-[var(--accent)]"
+            label="Healthy Services"
+            value={`${scopedSummary.operational}/${scopedSummary.totalServices}`}
+            tone="operational"
+          />
+          <StatCard
+            icon={<TriangleAlert className="h-5 w-5" />}
+            iconBg="bg-[color-mix(in_srgb,var(--color-down)_10%,transparent)] text-[var(--color-down)]"
+            label="Attention"
+            value={String(attentionServices.length)}
+            tone={attentionServices.length > 0 ? "down" : "operational"}
+          />
+          <StatCard
+            icon={<Zap className="h-5 w-5" />}
+            iconBg="bg-[color-mix(in_srgb,var(--color-degraded)_10%,transparent)] text-[var(--color-degraded)]"
+            label="Avg Latency"
+            value={avgLatency !== null ? `${avgLatency}ms` : "--"}
+            tone={avgLatency !== null && avgLatency <= 500 ? "operational" : avgLatency !== null && avgLatency <= 1200 ? "degraded" : "foreground"}
+          />
+          <StatCard
+            icon={<TrendingUp className="h-5 w-5" />}
+            iconBg="bg-[color-mix(in_srgb,var(--color-operational)_10%,transparent)] text-[var(--color-operational)]"
+            label="30d Uptime"
+            value={`${avgUptime30d}%`}
+            tone={avgUptime30d >= 99.9 ? "operational" : avgUptime30d >= 99 ? "degraded" : "down"}
+          />
+        </div>
 
-                return (
-                  <div
-                    key={group.category}
-                    className="rounded-[22px] overflow-hidden"
-                    style={{
-                      border: "1px solid var(--border)",
-                      background: "color-mix(in srgb, var(--panel) 90%, transparent)",
-                      boxShadow: "var(--shadow-soft)",
-                    }}
-                  >
-                    <div
-                      className="flex items-center justify-between gap-4 px-4 py-3.5"
-                      style={{
-                        background: "linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0))",
-                        borderBottom: "1px solid var(--border)",
-                      }}
-                    >
-                      <div>
-                        <h3 className="text-[12px] font-semibold uppercase tracking-[0.18em]" style={{ color: "var(--foreground)" }}>
-                          {group.label}
-                        </h3>
-                        <p className="text-[11px] mt-1" style={{ color: "var(--muted)" }}>
-                          {group.services.length} services
-                          {down > 0 && ` · ${down} down`}
-                          {degraded > 0 && ` · ${degraded} degraded`}
-                        </p>
-                      </div>
-                      <span
-                        className="text-[11px] px-2 py-1 rounded-full"
-                        style={{
-                          color: down > 0 ? "var(--color-down)" : degraded > 0 ? "var(--color-degraded)" : "var(--color-operational)",
-                          background: down > 0
-                            ? "color-mix(in srgb, var(--color-down) 10%, transparent)"
-                            : degraded > 0
-                              ? "color-mix(in srgb, var(--color-degraded) 10%, transparent)"
-                              : "color-mix(in srgb, var(--color-operational) 10%, transparent)",
-                        }}
-                      >
-                        {down > 0 ? "Action Needed" : degraded > 0 ? "Watch Closely" : "Stable"}
-                      </span>
-                    </div>
-                    <div>
-                      {group.services.map((service, i) => (
-                        <ServiceCard
-                          key={service.id}
-                          service={service}
-                          onRefresh={refreshSingleService}
-                          isLast={i === group.services.length - 1}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          {/* Services table */}
+          <section className="overflow-hidden rounded-2xl border border-[color:var(--border)] bg-[var(--card)]">
+            <div className="flex flex-col gap-3 border-b border-[color:var(--border)] px-5 py-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <p className={cn("text-xs font-medium", mutedTextClass)}>Services</p>
+                <h2 className={cn("mt-1 text-lg font-semibold", foregroundTextClass)}>
+                  {activeGroup ? `${activeGroup.shortName} service health` : "All monitored services"}
+                </h2>
+              </div>
+              <div className="relative w-full lg:max-w-[320px]">
+                <Search className={cn("absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2", mutedText2Class)} />
+                <input
+                  type="text"
+                  placeholder={activeGroup ? `Search ${activeGroup.shortName} services...` : "Search services..."}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className={cn("w-full rounded-xl bg-[var(--surface-glass-soft)] py-2 pl-9 pr-3 text-sm outline-none placeholder:text-[var(--muted-2)]", foregroundTextClass)}
+                />
+              </div>
             </div>
 
+            {groupedServices.map((group) => {
+              const down = group.services.filter((s) => s.currentStatus === "down").length;
+              const degraded = group.services.filter((s) => s.currentStatus === "degraded").length;
+              const tone: Tone = down > 0 ? "down" : degraded > 0 ? "degraded" : "operational";
+
+              return (
+                <section key={group.category}>
+                  <div className="flex items-end justify-between gap-3 border-b border-[color:var(--border)] px-5 py-3">
+                    <div>
+                      <p className={cn("text-[10px] font-medium uppercase tracking-wider", mutedText2Class)}>Category</p>
+                      <h3 className={cn("mt-1 text-sm font-semibold", foregroundTextClass)}>{group.label}</h3>
+                    </div>
+                    <span className={cn("rounded-lg px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider", toneChipClasses[tone])}>
+                      {down > 0 ? `${down} down` : degraded > 0 ? `${degraded} degraded` : "Stable"}
+                    </span>
+                  </div>
+
+                  <div className={cn("hidden border-b border-[color:var(--border)] bg-[var(--surface-glass-soft)] px-5 py-2.5 text-[10px] font-semibold uppercase tracking-wider xl:grid xl:grid-cols-[minmax(0,1.8fr)_110px_120px_110px_120px_48px] xl:gap-4", mutedText2Class)}>
+                    <span>Service</span>
+                    <span>Status</span>
+                    <span>Latency</span>
+                    <span>30d uptime</span>
+                    <span>Last check</span>
+                    <span />
+                  </div>
+
+                  <div>
+                    {group.services.map((service, i) => (
+                      <ServiceCard key={service.id} service={service} onRefresh={refreshSingleService} isLast={i === group.services.length - 1} />
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
+
             {filteredServices.length === 0 && (
-              <div className="text-center py-16 text-sm rounded-[22px]" style={{ color: "var(--muted)", border: "1px solid var(--border)", background: "var(--panel)" }}>
-                No services match your search
+              <div className={cn("px-6 py-16 text-center text-sm", mutedTextClass)}>
+                No services match the current search.
               </div>
             )}
           </section>
 
-          <aside className="space-y-6 xl:sticky xl:top-24 self-start">
-            <RailPanel
-              title="Ops Snapshot"
-              eyebrow="Current scope"
-              action={
-                <Link href="/team" className="text-[11px] hover:underline" style={{ color: "var(--muted)" }}>
-                  Open team
-                </Link>
-              }
-            >
-              <div className="space-y-3">
-                <SnapshotRow label="Services in scope" value={String(scopedServices.length)} />
-                <SnapshotRow label="Needs attention" value={String(attentionServices.length)} tone={attentionServices.length > 0 ? "var(--color-down)" : "var(--color-operational)"} />
-                <SnapshotRow label="Active incidents" value={String(scopedIncidents.length)} tone={scopedIncidents.length > 0 ? "var(--color-degraded)" : "var(--foreground)"} />
-                <SnapshotRow label="Maintenance windows" value={String(scopedMaintenance.length)} tone={scopedMaintenance.length > 0 ? "var(--color-maintenance)" : "var(--foreground)"} />
-                <SnapshotRow label="Owner coverage" value={`${ownerCoveragePercent}%`} tone={ownerCoveragePercent >= 90 ? "var(--color-operational)" : ownerCoveragePercent >= 70 ? "var(--color-degraded)" : "var(--color-down)"} />
-                <SnapshotRow label="Last updated" value={new Date(scopedSummary.lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} />
+          {/* Right aside */}
+          <aside className="space-y-4 xl:sticky xl:top-20 xl:self-start">
+            {/* Scope summary */}
+            <section className="rounded-2xl border border-[color:var(--border)] bg-[var(--card)] p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className={cn("text-sm font-semibold", foregroundTextClass)}>Scope Summary</h3>
+                <Activity className={cn("h-4 w-4", toneTextClasses.maintenance)} />
               </div>
-            </RailPanel>
+              <div className="mt-4 space-y-2">
+                <SummaryRow label="Services in scope" value={String(scopedSummary.totalServices)} tone="foreground" />
+                <SummaryRow label="Operational" value={String(scopedSummary.operational)} tone="operational" />
+                <SummaryRow label="Active incidents" value={String(scopedIncidents.length)} tone={scopedIncidents.length > 0 ? "degraded" : "foreground"} />
+                <SummaryRow label="Maintenance" value={String(scopedMaintenance.length)} tone={scopedMaintenance.length > 0 ? "maintenance" : "foreground"} />
+                <SummaryRow label="Owner coverage" value={`${ownerCoveragePercent}%`} tone={ownerCoveragePercent >= 90 ? "operational" : ownerCoveragePercent >= 70 ? "degraded" : "down"} />
+                <SummaryRow label="Latest release" value={latestDeployment ? latestDeployment.version : "Not logged"} tone={latestDeployment ? "operational" : "foreground"} />
+              </div>
+            </section>
 
             <IncidentsList incidents={scopedIncidents} />
             <MaintenanceList windows={scopedMaintenance} />
 
-            <RailPanel title="Watchlist" eyebrow="Priority queue">
-              {watchlist.length === 0 ? (
-                <p className="text-xs leading-6" style={{ color: "var(--muted)" }}>
-                  No services currently require special attention in this scope.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {watchlist.map((service) => (
-                    <div
-                      key={service.id}
-                      className="rounded-xl px-3 py-2.5"
-                      style={{
-                        background: "var(--background-secondary)",
-                        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-3">
+            {/* Watchlist */}
+            <section className="rounded-2xl border border-[color:var(--border)] bg-[var(--card)] p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className={cn("text-sm font-semibold", foregroundTextClass)}>Watchlist</h3>
+                <TriangleAlert className={cn("h-4 w-4", toneTextClasses.degraded)} />
+              </div>
+              <div className="mt-4 space-y-2">
+                {watchlist.length === 0 ? (
+                  <div className={cn("rounded-xl bg-[var(--surface-glass-soft)] px-4 py-3.5 text-xs", mutedTextClass)}>
+                    Nothing needs escalation in this scope.
+                  </div>
+                ) : (
+                  watchlist.map((service) => (
+                    <div key={service.id} className="rounded-xl bg-[var(--surface-glass-soft)] px-3.5 py-3">
+                      <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="text-sm font-medium truncate" style={{ color: "var(--foreground)" }}>
-                            {service.name}
-                          </p>
-                          <p className="text-[11px] truncate" style={{ color: "var(--muted)" }}>
-                            {service.owner?.memberName || "Unassigned owner"}
+                          <p className={cn("truncate text-sm font-medium", foregroundTextClass)}>{service.name}</p>
+                          <p className={cn("mt-0.5 truncate text-[11px]", mutedTextClass)}>
+                            {service.owner?.memberName || "Owner unassigned"}
                           </p>
                         </div>
-                        <div className="text-right flex-shrink-0">
-                          <p className="text-xs font-medium" style={{ color: service.currentStatus === "down" ? "var(--color-down)" : service.currentStatus === "degraded" ? "var(--color-degraded)" : "var(--color-maintenance)" }}>
-                            {service.currentStatus}
-                          </p>
-                          <p className="text-[11px]" style={{ color: "var(--muted-2)" }}>
-                            {service.lastResponseTime !== null ? `${Math.round(service.lastResponseTime)}ms` : "--"}
-                          </p>
-                        </div>
+                        <span className={cn(
+                          "text-[11px] font-semibold capitalize",
+                          service.currentStatus === "down" ? toneTextClasses.down : service.currentStatus === "degraded" ? toneTextClasses.degraded : toneTextClasses.maintenance,
+                        )}>
+                          {service.currentStatus}
+                        </span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              )}
-            </RailPanel>
-
-            {!forcedGroupId && productPulse.length > 0 && (
-              <RailPanel title="Product Pulse" eyebrow="Group health">
-                <div className="space-y-2">
-                  {productPulse.map((group) => (
-                    <div
-                      key={group.id}
-                      className="rounded-xl px-3 py-2.5"
-                      style={{
-                        background: "var(--background-secondary)",
-                        border: "1px solid color-mix(in srgb, var(--border) 82%, transparent)",
-                      }}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-medium" style={{ color: "var(--foreground)" }}>{group.name}</p>
-                          <p className="text-[11px]" style={{ color: "var(--muted)" }}>
-                            {group.healthy}/{group.total} healthy
-                          </p>
-                        </div>
-                        <div className="text-right text-[11px]" style={{ color: "var(--muted-2)" }}>
-                          {group.down > 0 && <div style={{ color: "var(--color-down)" }}>{group.down} down</div>}
-                          {group.degraded > 0 && <div style={{ color: "var(--color-degraded)" }}>{group.degraded} degraded</div>}
-                          {group.maintenance > 0 && <div style={{ color: "var(--color-maintenance)" }}>{group.maintenance} maint.</div>}
-                          {group.down === 0 && group.degraded === 0 && group.maintenance === 0 && (
-                            <div style={{ color: "var(--color-operational)" }}>stable</div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </RailPanel>
-            )}
+                  ))
+                )}
+              </div>
+            </section>
           </aside>
         </div>
-
-        {/* Footer */}
-        <footer className="mt-14 pt-6 text-center" style={{ borderTop: "1px solid var(--border)" }}>
-          <p className="text-[11px]" style={{ color: "var(--muted-2)" }}>
-            Platform Status Dashboard |{" "}
-            {connectionMode === "live" ? "Real-time via SSE" : "Auto-refreshes every 30s"}{" "}
-            | {data.summary.totalServices} services across {serviceGroups.length} products
-          </p>
-        </footer>
       </main>
     </div>
+  );
+}
+
+function StatCard({ icon, iconBg, label, value, tone }: { icon: React.ReactNode; iconBg: string; label: string; value: string; tone: Tone }) {
+  return (
+    <div className="rounded-2xl border border-[color:var(--border)] bg-[var(--card)] p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className={cn("flex h-10 w-10 items-center justify-center rounded-xl", iconBg)}>{icon}</div>
+        <ArrowUpRight className={cn("h-4 w-4", mutedText2Class)} />
+      </div>
+      <p className={cn("mt-4 text-xs font-medium", mutedTextClass)}>{label}</p>
+      <p className={cn("mt-1 text-2xl font-bold tracking-tight", tone === "foreground" ? foregroundTextClass : toneTextClasses[tone])}>{value}</p>
+    </div>
+  );
+}
+
+function SummaryRow({ label, value, tone }: { label: string; value: string; tone: Tone }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-[var(--surface-glass-soft)] px-3.5 py-2.5">
+      <span className={cn("text-xs", mutedTextClass)}>{label}</span>
+      <span className={cn("text-xs font-semibold", tone === "foreground" ? foregroundTextClass : toneTextClasses[tone])}>{value}</span>
+    </div>
+  );
+}
+
+function ConnectionBadge({ mode }: { mode: "connecting" | "live" | "polling" }) {
+  if (mode === "live") {
+    return (
+      <span className="inline-flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--color-operational)_8%,transparent)] px-3.5 py-2 text-xs font-medium text-[var(--color-operational)]">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--color-operational)] opacity-75" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-[var(--color-operational)]" />
+        </span>
+        Live
+      </span>
+    );
+  }
+  if (mode === "connecting") {
+    return (
+      <span className="inline-flex items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--color-degraded)_8%,transparent)] px-3.5 py-2 text-xs font-medium text-[var(--color-degraded)]">
+        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+        Syncing
+      </span>
+    );
+  }
+  return (
+    <span className={cn("inline-flex items-center gap-2 rounded-xl bg-[var(--surface-glass-soft)] px-3.5 py-2 text-xs font-medium", mutedTextClass)}>
+      <WifiOff className="h-3.5 w-3.5" />
+      Polling
+    </span>
   );
 }
 
@@ -706,121 +493,4 @@ function getWatchScore(service: ServiceWithStatus): number {
   if (service.currentStatus === "maintenance") return 2000;
   if (!service.owner?.memberId && service.tags?.includes("critical")) return 1500;
   return service.lastResponseTime || 0;
-}
-
-function MetricCard({
-  label,
-  value,
-  description,
-  icon: Icon,
-  tone,
-}: {
-  label: string;
-  value: string;
-  description: string;
-  icon: ElementType;
-  tone: string;
-}) {
-  return (
-    <div
-      className="rounded-[20px] p-4"
-      style={{
-        background: "rgba(11, 16, 24, 0.42)",
-        border: "1px solid rgba(255, 255, 255, 0.07)",
-      }}
-    >
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.16em]" style={{ color: "var(--muted-2)" }}>{label}</p>
-          <p className="text-[26px] font-semibold mt-2" style={{ color: tone }}>{value}</p>
-        </div>
-        <div
-          className="rounded-xl p-2.5"
-          style={{ background: `color-mix(in srgb, ${tone} 14%, rgba(255, 255, 255, 0.02))` }}
-        >
-          <Icon className="w-4 h-4" style={{ color: tone }} />
-        </div>
-      </div>
-      <p className="text-xs leading-5 mt-3" style={{ color: "var(--muted)" }}>{description}</p>
-    </div>
-  );
-}
-
-function SignalCard({
-  label,
-  value,
-  hint,
-  tone,
-}: {
-  label: string;
-  value: string;
-  hint: string;
-  tone: string;
-}) {
-  return (
-    <div
-      className="rounded-[18px] px-4 py-3"
-      style={{
-        background: "rgba(11, 16, 24, 0.42)",
-        border: "1px solid rgba(255, 255, 255, 0.07)",
-      }}
-    >
-      <p className="text-[11px] uppercase tracking-[0.16em]" style={{ color: "var(--muted-2)" }}>{label}</p>
-      <p className="text-base font-semibold mt-2" style={{ color: tone }}>{value}</p>
-      <p className="text-[11px] mt-1" style={{ color: "var(--muted)" }}>{hint}</p>
-    </div>
-  );
-}
-
-function RailPanel({
-  title,
-  eyebrow,
-  children,
-  action,
-}: {
-  title: string;
-  eyebrow?: string;
-  children: ReactNode;
-  action?: ReactNode;
-}) {
-  return (
-    <div
-      className="rounded-[22px] p-4 sm:p-5"
-      style={{
-        background: "color-mix(in srgb, var(--panel) 92%, transparent)",
-        border: "1px solid var(--border)",
-        boxShadow: "var(--shadow-soft)",
-      }}
-    >
-      <div className="flex items-start justify-between gap-3 mb-4">
-        <div>
-          {eyebrow && (
-            <p className="text-[11px] uppercase tracking-[0.16em]" style={{ color: "var(--muted-2)" }}>
-              {eyebrow}
-            </p>
-          )}
-          <h3 className="text-sm font-semibold mt-1" style={{ color: "var(--foreground)" }}>{title}</h3>
-        </div>
-        {action}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function SnapshotRow({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: string;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3 text-sm">
-      <span style={{ color: "var(--muted)" }}>{label}</span>
-      <span className="font-medium" style={{ color: tone || "var(--foreground)" }}>{value}</span>
-    </div>
-  );
 }

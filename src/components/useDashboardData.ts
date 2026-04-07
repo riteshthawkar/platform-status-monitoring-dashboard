@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DashboardSummary, HealthCheckResult, Incident, MaintenanceWindow, ServiceWithStatus } from "@/types";
+import { DashboardSummary, HealthCheckResult, Incident, MaintenanceWindow, ServiceDeployment, ServiceWithStatus } from "@/types";
 
 export type ConnectionMode = "connecting" | "live" | "polling";
 
@@ -10,6 +10,7 @@ export interface DashboardDataPayload {
   services: ServiceWithStatus[];
   activeIncidents: Incident[];
   activeMaintenanceWindows: MaintenanceWindow[];
+  recentDeployments: ServiceDeployment[];
 }
 
 async function getRequestError(res: Response): Promise<string> {
