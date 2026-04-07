@@ -28,6 +28,8 @@ export interface ServiceConfig {
   expectedKeyword?: string; // For keyword checks
   jsonPath?: string; // For JSON query checks (e.g., "status" to check response.status)
   jsonExpectedValue?: string;
+  jsonMinLength?: number;
+  jsonFailureKeywords?: string[];
   headers?: Record<string, string>;
   method?: "GET" | "POST" | "HEAD";
   body?: string;

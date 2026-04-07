@@ -6,6 +6,7 @@
 import { ServiceConfig, ServiceStatus, HealthCheckResult } from "@/types";
 import { getEnabledServices } from "./services-config";
 import { insertHealthCheck, getRecentChecks, createIncident, getActiveIncidents, updateIncident, getActiveMaintenanceWindow } from "./database";
+import { validateJsonResponse } from "./check-validation";
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
@@ -16,6 +17,10 @@ interface CheckResult {
   statusCode: number | null;
   errorMessage: string | null;
   retries: number;
+}
+
+export function getStatusForUnexpectedHttpStatus(statusCode: number): ServiceStatus {
+  return statusCode >= 500 ? "down" : "degraded";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -43,6 +48,15 @@ async function performHttpCheck(service: ServiceConfig): Promise<Omit<CheckResul
 
     // For keyword checks, we need to read the body
     if (service.checkType === "keyword" && service.expectedKeyword) {
+      if (response.status !== expectedStatus) {
+        return {
+          status: getStatusForUnexpectedHttpStatus(response.status),
+          responseTimeMs: responseTime,
+          statusCode: response.status,
+          errorMessage: `Expected status ${expectedStatus}, got ${response.status}`,
+        };
+      }
+
       const body = await response.text();
       if (body.includes(service.expectedKeyword)) {
         return {
@@ -62,25 +76,25 @@ async function performHttpCheck(service: ServiceConfig): Promise<Omit<CheckResul
     }
 
     // For JSON query checks
-    if (service.checkType === "json_query" && service.jsonPath && service.jsonExpectedValue) {
+    if (service.checkType === "json_query") {
       try {
         const json = await response.json();
-        const value = getNestedValue(json, service.jsonPath);
-        if (String(value) === service.jsonExpectedValue) {
+        if (response.status !== expectedStatus) {
           return {
-            status: "operational",
+            status: getStatusForUnexpectedHttpStatus(response.status),
             responseTimeMs: responseTime,
             statusCode: response.status,
-            errorMessage: null,
-          };
-        } else {
-          return {
-            status: "degraded",
-            responseTimeMs: responseTime,
-            statusCode: response.status,
-            errorMessage: `JSON path "${service.jsonPath}" returned "${value}", expected "${service.jsonExpectedValue}"`,
+            errorMessage: `Expected status ${expectedStatus}, got ${response.status}`,
           };
         }
+
+        const validation = validateJsonResponse(service, json);
+        return {
+          status: validation.status,
+          responseTimeMs: responseTime,
+          statusCode: response.status,
+          errorMessage: validation.errorMessage,
+        };
       } catch {
         return {
           status: "degraded",
@@ -110,7 +124,7 @@ async function performHttpCheck(service: ServiceConfig): Promise<Omit<CheckResul
       };
     } else {
       return {
-        status: "degraded",
+        status: getStatusForUnexpectedHttpStatus(response.status),
         responseTimeMs: responseTime,
         statusCode: response.status,
         errorMessage: `Expected status ${expectedStatus}, got ${response.status}`,
@@ -156,15 +170,6 @@ async function performCheckWithRetry(service: ServiceConfig): Promise<CheckResul
   }
 
   return { ...lastResult, retries };
-}
-
-function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-  return path.split(".").reduce((acc: unknown, key: string) => {
-    if (acc && typeof acc === "object") {
-      return (acc as Record<string, unknown>)[key];
-    }
-    return undefined;
-  }, obj);
 }
 
 export async function checkService(service: ServiceConfig): Promise<HealthCheckResult> {
