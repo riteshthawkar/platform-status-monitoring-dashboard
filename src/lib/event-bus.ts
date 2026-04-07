@@ -5,7 +5,7 @@
 // health check results to all connected SSE clients.
 // ============================================================
 
-import { ServiceWithStatus, HealthCheckResult, DashboardSummary, ServiceStatus, Incident, MaintenanceWindow, ServiceOwner } from "@/types";
+import { ServiceWithStatus, HealthCheckResult, DashboardSummary, ServiceStatus, Incident, MaintenanceWindow, ServiceOwner, ServiceDeployment } from "@/types";
 import { getEnabledServices } from "./services-config";
 import {
   getLatestCheck,
@@ -14,6 +14,8 @@ import {
   getActiveIncidents,
   getAllServiceOwners,
   getActiveMaintenanceWindows,
+  getLatestDeployments,
+  getServiceDeployments,
 } from "./database";
 
 type StatusUpdateCallback = (services: ServiceWithStatus[]) => void;
@@ -24,6 +26,7 @@ interface CachedDashboard {
   services: ServiceWithStatus[];
   activeIncidents: Incident[];
   activeMaintenanceWindows: MaintenanceWindow[];
+  recentDeployments: ServiceDeployment[];
   cachedAt: number;
 }
 
@@ -65,6 +68,13 @@ class EventBus {
     });
     const maintenanceByService = new Map(activeMaintenanceWindows.map((window) => [window.serviceId, window]));
     const ownerByService = new Map<string, ServiceOwner>(getAllServiceOwners().map((owner) => [owner.serviceId, owner]));
+    const latestDeploymentByService = new Map<string, ServiceDeployment>();
+    for (const deployment of getLatestDeployments()) {
+      if (!latestDeploymentByService.has(deployment.serviceId)) {
+        latestDeploymentByService.set(deployment.serviceId, deployment);
+      }
+    }
+    const recentDeployments = getServiceDeployments({ limit: 12 });
 
     const servicesWithStatus: ServiceWithStatus[] = services.map((service) => {
       const latestCheck = getLatestCheck(service.id);
@@ -86,6 +96,7 @@ class EventBus {
         recentChecks: recentChecks,
         owner: ownerByService.get(service.id) ?? null,
         activeMaintenance,
+        latestDeployment: latestDeploymentByService.get(service.id) ?? null,
       };
     });
 
@@ -117,6 +128,7 @@ class EventBus {
       services: servicesWithStatus,
       activeIncidents,
       activeMaintenanceWindows,
+      recentDeployments,
       cachedAt: Date.now(),
     };
     return this._dashboardCache;
