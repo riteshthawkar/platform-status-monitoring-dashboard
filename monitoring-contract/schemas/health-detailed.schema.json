@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lawa.ai/monitoring-contract/schemas/health-detailed.schema.json",
+  "title": "Monitoring Contract v1 /health/detailed",
+  "allOf": [
+    { "$ref": "./common.schema.json" }
+  ],
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "checks"
+  ],
+  "properties": {
+    "checks": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "degraded",
+              "unhealthy",
+              "unknown"
+            ]
+          },
+          "latencyMs": { "type": "number", "minimum": 0 },
+          "message": { "type": "string" },
+          "error": { "type": "string" },
+          "details": {}
+        }
+      }
+    }
+  }
+}

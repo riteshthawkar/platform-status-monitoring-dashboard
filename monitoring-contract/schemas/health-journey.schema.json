@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lawa.ai/monitoring-contract/schemas/health-journey.schema.json",
+  "title": "Monitoring Contract v1 /health/journey",
+  "allOf": [
+    { "$ref": "./common.schema.json" }
+  ],
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "journey"
+  ],
+  "properties": {
+    "journey": {
+      "type": "object",
+      "required": [
+        "name",
+        "status"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "healthy",
+            "degraded",
+            "unhealthy",
+            "unknown"
+          ]
+        },
+        "probeModeSupported": { "type": "boolean" },
+        "sideEffects": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "unknown"
+          ]
+        },
+        "durationMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

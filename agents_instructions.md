@@ -2,6 +2,12 @@
 
 Use this file as the implementation contract for every service repo that is monitored by the platform status dashboard.
 
+Canonical spec files in this repo:
+- `monitoring-contract/monitoring-contract-v1.md`
+- `monitoring-contract/schemas/*.json`
+- `src/scripts/monitoring-conformance.ts`
+- `monitoring-contract/templates/github-actions-monitoring-conformance.yml`
+
 The goal is simple:
 - every service should expose health in the same way
 - every release should be traceable

@@ -9,6 +9,7 @@ It is designed for a single production VM or droplet:
 - PM2 for process supervision
 - Nginx reverse proxy
 - nightly SQLite backups with retention
+- optional off-droplet backup upload to S3-compatible storage
 
 ## What It Does
 
@@ -54,6 +55,40 @@ Current capabilities include:
 - `src/proxy.ts`
   Enforces dashboard auth, API auth, and HTTPS redirect behavior in production.
 
+## Monitoring Contract Framework
+
+This repo now includes a generalized monitoring contract package that service
+teams can adopt directly.
+
+Contract assets:
+- `monitoring-contract/monitoring-contract-v1.md`
+- `monitoring-contract/schemas/*.json`
+- `src/lib/monitoring-contract.ts`
+- `src/scripts/monitoring-conformance.ts`
+- `monitoring-contract/templates/github-actions-monitoring-conformance.yml`
+
+What this gives you:
+- a versioned endpoint contract (`monitoring-contract/v1`)
+- standardized required endpoints by service profile
+- reusable payload validator
+- CI-ready conformance runner template for service repos
+
+### Endpoint Profiles
+
+- `generic`: `/health/live`, `/health/ready`, `/health/detailed`
+- `llm`: generic + `/health/journey`
+- `rag`: generic + `/health/journey`
+- `agent-platform`: generic + `/health/journey`
+
+### Run Conformance Locally
+
+```bash
+npm run monitoring:conformance -- \
+  --base-url https://service.example.com \
+  --profile rag \
+  --require-healthy false
+```
+
 ## Single-Droplet Deployment Model
 
 This repository is now tuned for a single DigitalOcean droplet.
@@ -64,6 +99,7 @@ Production assumptions:
 - one SQLite database file
 - one scheduler instance
 - nightly local backups
+- optional offsite backup copy for disaster recovery
 
 This is not a multi-instance HA setup. It is intentionally optimized for a single-host internal operations deployment.
 
@@ -94,6 +130,14 @@ SMTP_PASS=...
 ALERT_EMAIL_FROM=...
 ALERT_EMAIL_TO=...
 # ALERT_ESCALATION_EMAIL_TO=...
+
+# Optional off-droplet backups (DigitalOcean Spaces / S3-compatible)
+DATABASE_BACKUP_REMOTE_BUCKET=...
+DATABASE_BACKUP_REMOTE_PREFIX=platform-status-dashboard
+DATABASE_BACKUP_REMOTE_ENDPOINT=https://sgp1.digitaloceanspaces.com
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_DEFAULT_REGION=sgp1
 ```
 
 ## Deploy on a DigitalOcean Droplet
@@ -115,7 +159,7 @@ curl -sSL https://raw.githubusercontent.com/riteshthawkar/platform-status-monito
 ```
 
 What the setup script does:
-- installs Node.js, PM2, Nginx, certbot, and sqlite3
+- installs Node.js, PM2, Nginx, certbot, sqlite3, and awscli
 - creates user `dashuser`
 - clones the app to `/home/dashuser/app`
 - builds the app
@@ -162,6 +206,7 @@ bash deploy/update.sh
 ```
 
 What this does:
+- creates a pre-update SQLite snapshot before changing code
 - pulls latest code
 - installs dependencies
 - rebuilds the app
@@ -190,11 +235,22 @@ Each backup:
 - writes a `.meta` file with checksum and details
 - prunes backups older than the configured retention period
 
+If remote backup upload is configured, each backup also uploads the archive and
+metadata file to your S3-compatible bucket. Remote retention should be handled
+with bucket lifecycle rules.
+
 ### Run a Manual Backup
 
 ```bash
 cd /home/dashuser/app
 npm run backup:db
+```
+
+Optional labeled snapshot:
+
+```bash
+cd /home/dashuser/app
+bash src/scripts/backup-database.sh --label pre-maintenance
 ```
 
 ### Restore a Backup

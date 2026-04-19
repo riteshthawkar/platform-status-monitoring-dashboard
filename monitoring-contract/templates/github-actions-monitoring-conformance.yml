@@ -1,0 +1,40 @@
+name: Monitoring Conformance
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  contract-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Contract conformance
+        run: |
+          npx tsx src/scripts/monitoring-conformance.ts \
+            --base-url "${{ vars.MONITORING_BASE_URL }}" \
+            --profile "${{ vars.MONITORING_PROFILE || 'generic' }}" \
+            --timeout-ms "${{ vars.MONITORING_TIMEOUT_MS || '10000' }}" \
+            --require-healthy "${{ vars.MONITORING_REQUIRE_HEALTHY || 'false' }}" \
+            --probe-mode true
+
+      - name: Notes
+        run: |
+          echo "Set these repository variables:"
+          echo "  MONITORING_BASE_URL     (required)"
+          echo "  MONITORING_PROFILE      (generic|llm|rag|agent-platform)"
+          echo "  MONITORING_TIMEOUT_MS   (optional)"
+          echo "  MONITORING_REQUIRE_HEALTHY (optional true|false)"
