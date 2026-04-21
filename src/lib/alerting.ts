@@ -4,6 +4,7 @@
 // ============================================================
 
 import { HealthCheckResult, ServiceStatus } from "@/types";
+import { loadEnvConfig } from "@next/env";
 import { getServiceById } from "./services-config";
 import {
   logAlert,
@@ -26,6 +27,9 @@ import {
   getServiceOwner,
 } from "./database";
 import nodemailer from "nodemailer";
+
+// Ensure .env* is loaded when this module is used outside Next runtime (cron/tsx scripts).
+loadEnvConfig(process.cwd());
 
 // ─── Config from environment ─────────────────────────────────
 
