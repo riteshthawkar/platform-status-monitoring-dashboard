@@ -28,8 +28,22 @@ jobs:
             --base-url "${{ vars.MONITORING_BASE_URL }}" \
             --profile "${{ vars.MONITORING_PROFILE || 'generic' }}" \
             --timeout-ms "${{ vars.MONITORING_TIMEOUT_MS || '10000' }}" \
+            --retries "${{ vars.MONITORING_RETRIES || '2' }}" \
+            --retry-delay-ms "${{ vars.MONITORING_RETRY_DELAY_MS || '300' }}" \
             --require-healthy "${{ vars.MONITORING_REQUIRE_HEALTHY || 'false' }}" \
+            --max-latency-ms "${{ vars.MONITORING_MAX_LATENCY_MS || '2000' }}" \
+            --enforce-latency "${{ vars.MONITORING_ENFORCE_LATENCY || 'false' }}" \
+            --max-age-seconds "${{ vars.MONITORING_MAX_AGE_SECONDS || '300' }}" \
+            --require-release "${{ vars.MONITORING_REQUIRE_RELEASE || 'false' }}" \
+            --output-json ./monitoring-conformance-report.json \
             --probe-mode true
+
+      - name: Upload conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-conformance-report
+          path: ./monitoring-conformance-report.json
 
       - name: Notes
         run: |
@@ -37,4 +51,10 @@ jobs:
           echo "  MONITORING_BASE_URL     (required)"
           echo "  MONITORING_PROFILE      (generic|llm|rag|agent-platform)"
           echo "  MONITORING_TIMEOUT_MS   (optional)"
+          echo "  MONITORING_RETRIES      (optional)"
+          echo "  MONITORING_RETRY_DELAY_MS (optional)"
           echo "  MONITORING_REQUIRE_HEALTHY (optional true|false)"
+          echo "  MONITORING_MAX_LATENCY_MS (optional)"
+          echo "  MONITORING_ENFORCE_LATENCY (optional true|false)"
+          echo "  MONITORING_MAX_AGE_SECONDS (optional)"
+          echo "  MONITORING_REQUIRE_RELEASE (optional true|false)"

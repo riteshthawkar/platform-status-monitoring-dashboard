@@ -1,21 +1,9 @@
 "use client";
 
+import type { ElementType } from "react";
 import { ServiceGroup } from "@/types";
-import {
-  LayoutGrid,
-  GraduationCap,
-  Landmark,
-  Globe,
-  BrainCircuit,
-} from "lucide-react";
-
-const iconMap: Record<string, React.ElementType> = {
-  GraduationCap,
-  Landmark,
-  Globe,
-  BrainCircuit,
-  LayoutGrid,
-};
+import { allProductsIcon, getGroupNavIcon } from "@/lib/navigation-icons";
+import { cn, foregroundTextClass, mutedTextClass } from "@/lib/ui";
 
 interface ProductTabsProps {
   groups: ServiceGroup[];
@@ -25,100 +13,72 @@ interface ProductTabsProps {
 }
 
 export default function ProductTabs({ groups, activeTab, onTabChange, groupCounts }: ProductTabsProps) {
-  const allCounts = groupCounts["all"] || { total: 0, operational: 0, down: 0, degraded: 0 };
+  const allCounts = groupCounts.all || { total: 0, operational: 0, down: 0, degraded: 0 };
 
   return (
-    <div
-      className="mb-6 rounded-[22px] p-2 overflow-hidden"
-      style={{
-        background: "color-mix(in srgb, var(--panel) 92%, transparent)",
-        border: "1px solid var(--border)",
-        boxShadow: "var(--shadow-soft)",
-      }}
-    >
-      <nav className="flex gap-2 overflow-x-auto">
-        <TabButton
-          id="all"
-          label="All Services"
-          icon={LayoutGrid}
-          isActive={activeTab === "all"}
-          count={allCounts.total}
-          operational={allCounts.operational}
-          hasIssues={allCounts.down > 0 || allCounts.degraded > 0}
-          onClick={() => onTabChange("all")}
-        />
+    <nav className="flex gap-1.5 overflow-x-auto pb-1">
+      <ScopeButton
+        label="All"
+        icon={allProductsIcon}
+        isActive={activeTab === "all"}
+        meta={`${allCounts.total}`}
+        onClick={() => onTabChange("all")}
+      />
 
-        {groups.map((group) => {
-          const Icon = iconMap[group.icon] || Globe;
-          const counts = groupCounts[group.id] || { total: 0, operational: 0, down: 0, degraded: 0 };
-          return (
-            <TabButton
-              key={group.id}
-              id={group.id}
-              label={group.shortName}
-              icon={Icon}
-              isActive={activeTab === group.id}
-              count={counts.total}
-              operational={counts.operational}
-              hasIssues={counts.down > 0 || counts.degraded > 0}
-              onClick={() => onTabChange(group.id)}
-            />
-          );
-        })}
-      </nav>
-    </div>
+      {groups.map((group) => {
+        const Icon = getGroupNavIcon(group.id);
+        const counts = groupCounts[group.id] || { total: 0, operational: 0, down: 0, degraded: 0 };
+
+        return (
+          <ScopeButton
+            key={group.id}
+            label={group.shortName}
+            icon={Icon}
+            isActive={activeTab === group.id}
+            meta={`${counts.total}`}
+            onClick={() => onTabChange(group.id)}
+          />
+        );
+      })}
+    </nav>
   );
 }
 
-interface TabButtonProps {
-  id: string;
+function ScopeButton({
+  label,
+  icon: Icon,
+  isActive,
+  meta,
+  onClick,
+}: {
   label: string;
-  icon: React.ElementType;
+  icon: ElementType;
   isActive: boolean;
-  count: number;
-  operational: number;
-  hasIssues: boolean;
+  meta: string;
   onClick: () => void;
-}
-
-function TabButton({ label, icon: Icon, isActive, count, operational, hasIssues, onClick }: TabButtonProps) {
+}) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="relative flex items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium transition-all whitespace-nowrap flex-shrink-0 rounded-2xl"
-      style={{
-        color: isActive ? "var(--foreground)" : "var(--muted)",
-        background: isActive ? "linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03))" : "transparent",
-        border: isActive ? "1px solid rgba(255,255,255,0.08)" : "1px solid transparent",
-      }}
-      onMouseEnter={(e) => {
-        if (!isActive) {
-          e.currentTarget.style.color = "var(--foreground)";
-          e.currentTarget.style.background = "rgba(255,255,255,0.03)";
-        }
-      }}
-      onMouseLeave={(e) => {
-        if (!isActive) {
-          e.currentTarget.style.color = "var(--muted)";
-          e.currentTarget.style.background = "transparent";
-        }
-      }}
+      className={cn(
+        "inline-flex min-w-fit items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-medium transition-colors",
+        isActive
+          ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+          : cn("bg-[var(--surface-glass-soft)]", mutedTextClass, "hover:text-[var(--foreground)]"),
+      )}
     >
-      <Icon className="w-3.5 h-3.5" />
+      <Icon className={cn("h-3.5 w-3.5", isActive ? "text-[var(--accent)]" : "")} />
       <span>{label}</span>
       <span
-        className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded"
-        style={{
-          background: isActive ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.04)",
-          color: isActive ? "var(--foreground)" : "var(--muted-2)",
-        }}
-      >
-        {hasIssues ? (
-          <span className="w-1.5 h-1.5 rounded-full animate-pulse-dot" style={{ background: "var(--color-down)" }} />
-        ) : (
-          <span className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--color-operational)" }} />
+        className={cn(
+          "rounded-md px-1.5 py-0.5 text-[10px] font-semibold",
+          isActive
+            ? "bg-[var(--accent)] text-white"
+            : "bg-[var(--surface-glass-soft)] text-[var(--muted-2)]",
         )}
-        {operational}/{count}
+      >
+        {meta}
       </span>
     </button>
   );

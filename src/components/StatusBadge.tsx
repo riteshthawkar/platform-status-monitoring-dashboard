@@ -1,39 +1,40 @@
 "use client";
 
 import { ServiceStatus } from "@/types";
+import { cn } from "@/lib/ui";
 
 const statusConfig: Record<
   ServiceStatus,
-  { label: string; color: string; dotColor: string; pulse: boolean }
+  { label: string; badgeClass: string; dotClass: string; pulse: boolean }
 > = {
   operational: {
     label: "Operational",
-    color: "var(--color-operational)",
-    dotColor: "var(--color-operational)",
+    badgeClass: "bg-[color-mix(in_srgb,var(--color-operational)_8%,transparent)] text-[var(--color-operational)]",
+    dotClass: "bg-[var(--color-operational)]",
     pulse: false,
   },
   degraded: {
     label: "Degraded",
-    color: "var(--color-degraded)",
-    dotColor: "var(--color-degraded)",
+    badgeClass: "bg-[color-mix(in_srgb,var(--color-degraded)_8%,transparent)] text-[var(--color-degraded)]",
+    dotClass: "bg-[var(--color-degraded)]",
     pulse: true,
   },
   down: {
     label: "Down",
-    color: "var(--color-down)",
-    dotColor: "var(--color-down)",
+    badgeClass: "bg-[color-mix(in_srgb,var(--color-down)_8%,transparent)] text-[var(--color-down)]",
+    dotClass: "bg-[var(--color-down)]",
     pulse: true,
   },
   maintenance: {
     label: "Maintenance",
-    color: "var(--color-maintenance)",
-    dotColor: "var(--color-maintenance)",
+    badgeClass: "bg-[color-mix(in_srgb,var(--color-maintenance)_8%,transparent)] text-[var(--color-maintenance)]",
+    dotClass: "bg-[var(--color-maintenance)]",
     pulse: false,
   },
   unknown: {
     label: "Unknown",
-    color: "var(--color-unknown)",
-    dotColor: "var(--color-unknown)",
+    badgeClass: "bg-[color-mix(in_srgb,var(--color-unknown)_8%,transparent)] text-[var(--color-unknown)]",
+    dotClass: "bg-[var(--color-unknown)]",
     pulse: false,
   },
 };
@@ -47,30 +48,25 @@ export default function StatusBadge({ status, size = "md" }: StatusBadgeProps) {
   const config = statusConfig[status] || statusConfig.unknown;
 
   const sizeClasses = {
-    sm: { text: "text-[11px]", px: "6px 8px", dot: 5, gap: 5 },
-    md: { text: "text-xs", px: "6px 10px", dot: 6, gap: 6 },
-    lg: { text: "text-sm", px: "8px 12px", dot: 7, gap: 6 },
+    sm: { text: "text-[10px]", padding: "px-2 py-0.5", dot: "h-1 w-1", gap: "gap-1" },
+    md: { text: "text-xs", padding: "px-2.5 py-1", dot: "h-1.5 w-1.5", gap: "gap-1.5" },
+    lg: { text: "text-sm", padding: "px-3 py-1.5", dot: "h-[7px] w-[7px]", gap: "gap-1.5" },
   };
 
   const s = sizeClasses[size];
 
   return (
     <span
-      className={`inline-flex items-center rounded-full font-medium ${s.text}`}
-      style={{
-        padding: s.px,
-        color: config.color,
-        background: `color-mix(in srgb, ${config.color} 10%, transparent)`,
-        gap: s.gap,
-      }}
+      className={cn(
+        "inline-flex items-center rounded-md font-medium",
+        s.text,
+        s.padding,
+        s.gap,
+        config.badgeClass,
+      )}
     >
       <span
-        className={`rounded-full ${config.pulse ? "animate-pulse-dot" : ""}`}
-        style={{
-          width: s.dot,
-          height: s.dot,
-          background: config.dotColor,
-        }}
+        className={cn("rounded-full", s.dot, config.dotClass, config.pulse && "animate-pulse-dot")}
       />
       {config.label}
     </span>
@@ -79,16 +75,11 @@ export default function StatusBadge({ status, size = "md" }: StatusBadgeProps) {
 
 export function StatusDot({ status, size = "md" }: StatusBadgeProps) {
   const config = statusConfig[status] || statusConfig.unknown;
-  const dotSizes = { sm: 6, md: 8, lg: 10 };
+  const dotSizes = { sm: "h-1.5 w-1.5", md: "h-2 w-2", lg: "h-2.5 w-2.5" };
 
   return (
     <span
-      className={`inline-block rounded-full ${config.pulse ? "animate-pulse-dot" : ""}`}
-      style={{
-        width: dotSizes[size],
-        height: dotSizes[size],
-        background: config.dotColor,
-      }}
+      className={cn("inline-block rounded-full", dotSizes[size], config.dotClass, config.pulse && "animate-pulse-dot")}
       title={config.label}
     />
   );

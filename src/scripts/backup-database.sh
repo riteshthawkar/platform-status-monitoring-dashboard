@@ -15,6 +15,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="$PROJECT_DIR/.env.local"
 
+LABEL=""
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --label)
+            if [ $# -lt 2 ]; then
+                echo "❌ --label requires a value"
+                exit 1
+            fi
+            LABEL="$2"
+            shift 2
+            ;;
+        *)
+            echo "Usage: bash src/scripts/backup-database.sh [--label NAME]"
+            exit 1
+            ;;
+    esac
+done
+
 read_env_value() {
     local key="$1"
     local fallback="${2:-}"
@@ -34,6 +53,12 @@ read_env_value() {
 DATABASE_PATH_VALUE="${DATABASE_PATH:-$(read_env_value DATABASE_PATH "$PROJECT_DIR/data/status.db")}"
 BACKUP_DIR="${DATABASE_BACKUP_DIR:-$(read_env_value DATABASE_BACKUP_DIR "$PROJECT_DIR/backups")}"
 RETENTION_DAYS="${DATABASE_BACKUP_RETENTION_DAYS:-$(read_env_value DATABASE_BACKUP_RETENTION_DAYS "14")}"
+REMOTE_BUCKET="${DATABASE_BACKUP_REMOTE_BUCKET:-$(read_env_value DATABASE_BACKUP_REMOTE_BUCKET "")}"
+REMOTE_PREFIX="${DATABASE_BACKUP_REMOTE_PREFIX:-$(read_env_value DATABASE_BACKUP_REMOTE_PREFIX "")}"
+REMOTE_ENDPOINT="${DATABASE_BACKUP_REMOTE_ENDPOINT:-$(read_env_value DATABASE_BACKUP_REMOTE_ENDPOINT "")}"
+REMOTE_ACCESS_KEY="${AWS_ACCESS_KEY_ID:-$(read_env_value AWS_ACCESS_KEY_ID "")}"
+REMOTE_SECRET_KEY="${AWS_SECRET_ACCESS_KEY:-$(read_env_value AWS_SECRET_ACCESS_KEY "")}"
+REMOTE_REGION="${AWS_DEFAULT_REGION:-$(read_env_value AWS_DEFAULT_REGION "")}"
 
 if ! command -v sqlite3 >/dev/null 2>&1; then
     echo "❌ sqlite3 is required but not installed"
@@ -49,9 +74,25 @@ mkdir -p "$BACKUP_DIR"
 
 TIMESTAMP="$(date -u +"%Y%m%dT%H%M%SZ")"
 TMP_DIR="$(mktemp -d "$BACKUP_DIR/.backup-tmp.XXXXXX")"
-SNAPSHOT_DB="$TMP_DIR/status-$TIMESTAMP.sqlite3"
-ARCHIVE_PATH="$BACKUP_DIR/status-$TIMESTAMP.sqlite3.gz"
-META_PATH="$BACKUP_DIR/status-$TIMESTAMP.meta"
+
+sanitize_label() {
+    local raw="$1"
+    printf '%s' "$raw" | tr '[:space:]' '-' | tr -cd '[:alnum:]._-'
+}
+
+NAME_PREFIX="status"
+if [ -n "$LABEL" ]; then
+    SAFE_LABEL="$(sanitize_label "$LABEL")"
+    if [ -z "$SAFE_LABEL" ]; then
+        echo "❌ Backup label must contain at least one alphanumeric character"
+        exit 1
+    fi
+    NAME_PREFIX="${NAME_PREFIX}-${SAFE_LABEL}"
+fi
+
+SNAPSHOT_DB="$TMP_DIR/${NAME_PREFIX}-$TIMESTAMP.sqlite3"
+ARCHIVE_PATH="$BACKUP_DIR/${NAME_PREFIX}-$TIMESTAMP.sqlite3.gz"
+META_PATH="$BACKUP_DIR/${NAME_PREFIX}-$TIMESTAMP.meta"
 
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -84,6 +125,41 @@ EOF
 
 find "$BACKUP_DIR" -maxdepth 1 -type f -name 'status-*.sqlite3.gz' -mtime +"$RETENTION_DAYS" -delete
 find "$BACKUP_DIR" -maxdepth 1 -type f -name 'status-*.meta' -mtime +"$RETENTION_DAYS" -delete
+
+if [ -n "$REMOTE_BUCKET" ] || [ -n "$REMOTE_ENDPOINT" ] || [ -n "$REMOTE_ACCESS_KEY" ] || [ -n "$REMOTE_SECRET_KEY" ] || [ -n "$REMOTE_REGION" ]; then
+    if [ -z "$REMOTE_BUCKET" ] || [ -z "$REMOTE_ENDPOINT" ] || [ -z "$REMOTE_ACCESS_KEY" ] || [ -z "$REMOTE_SECRET_KEY" ] || [ -z "$REMOTE_REGION" ]; then
+        echo "❌ Remote backup upload requires DATABASE_BACKUP_REMOTE_BUCKET, DATABASE_BACKUP_REMOTE_ENDPOINT, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_DEFAULT_REGION"
+        exit 1
+    fi
+
+    if ! command -v aws >/dev/null 2>&1; then
+        echo "❌ aws CLI is required for remote backup upload"
+        exit 1
+    fi
+
+    REMOTE_URI="s3://${REMOTE_BUCKET}"
+    if [ -z "$REMOTE_PREFIX" ]; then
+        REMOTE_PREFIX="platform-status-dashboard"
+    fi
+    if [ -n "$REMOTE_PREFIX" ]; then
+        REMOTE_PREFIX_CLEAN="${REMOTE_PREFIX#/}"
+        REMOTE_PREFIX_CLEAN="${REMOTE_PREFIX_CLEAN%/}"
+        REMOTE_URI="${REMOTE_URI}/${REMOTE_PREFIX_CLEAN}"
+    fi
+
+    echo "→ Uploading backup archive to ${REMOTE_URI}"
+    AWS_ACCESS_KEY_ID="$REMOTE_ACCESS_KEY" \
+    AWS_SECRET_ACCESS_KEY="$REMOTE_SECRET_KEY" \
+    AWS_DEFAULT_REGION="$REMOTE_REGION" \
+        aws --endpoint-url "$REMOTE_ENDPOINT" s3 cp "$ARCHIVE_PATH" "${REMOTE_URI}/$(basename "$ARCHIVE_PATH")" --only-show-errors
+
+    AWS_ACCESS_KEY_ID="$REMOTE_ACCESS_KEY" \
+    AWS_SECRET_ACCESS_KEY="$REMOTE_SECRET_KEY" \
+    AWS_DEFAULT_REGION="$REMOTE_REGION" \
+        aws --endpoint-url "$REMOTE_ENDPOINT" s3 cp "$META_PATH" "${REMOTE_URI}/$(basename "$META_PATH")" --only-show-errors
+
+    echo "✓ Remote backup uploaded: ${REMOTE_URI}"
+fi
 
 echo "✓ Backup created: $ARCHIVE_PATH"
 echo "✓ Metadata written: $META_PATH"
