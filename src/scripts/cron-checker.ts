@@ -21,9 +21,18 @@ import {
   getActiveIncidents,
   updateIncident,
   getActiveMaintenanceWindow,
+  getProbeUsageTotals,
+  recordProbeBudgetSkip,
+  recordProbeUsage,
 } from "../lib/database";
-import { sendAlert, processAlertsForResults, getAlertConfig } from "../lib/alerting";
+import { processAlertsForResults, getAlertConfig } from "../lib/alerting";
 import { HealthCheckResult, ServiceStatus } from "../types";
+import {
+  decideTokenProbeBudget,
+  estimateProbeTokens,
+  getProbePolicyConfig,
+  isTokenMeteredProbe,
+} from "../lib/probe-policy";
 
 const CONSECUTIVE_FAILURES_THRESHOLD = 3;
 
@@ -40,9 +49,18 @@ async function main() {
   console.log(`  Slack: ${alertConfig.slackConfigured ? "✅ Configured" : "❌ Not configured (set SLACK_WEBHOOK_URL)"}`);
   console.log(`  Email: ${alertConfig.emailConfigured ? `✅ Configured → ${alertConfig.emailTo}` : "❌ Not configured (set SMTP_HOST, SMTP_USER, SMTP_PASS, ALERT_EMAIL_TO)"}`);
   console.log(`  Cooldown: ${alertConfig.cooldownMinutes}min\n`);
+  const policyConfig = getProbePolicyConfig();
+  console.log(
+    `  Token probe budget: ${policyConfig.dailyTokenBudget}/day global, ` +
+    `${policyConfig.perServiceDailyTokenBudget}/day per-service` +
+    `${policyConfig.enforceTokenBudget ? "" : " (enforcement disabled)"}\n`
+  );
 
   const services = getEnabledServices();
   console.log(`  Checking ${services.length} services...\n`);
+  const activeIncidentServiceIds = new Set(getActiveIncidents().map((incident) => incident.serviceId));
+  let budgetSkipped = 0;
+  let cycleEstimatedTokens = 0;
 
   // Get previous statuses for comparison
   const previousStatuses = new Map<string, ServiceStatus>();
@@ -56,12 +74,53 @@ async function main() {
   // Run all checks (with built-in retry logic)
   const results: HealthCheckResult[] = [];
   for (const service of services) {
+    if (isTokenMeteredProbe(service)) {
+      const estimatedTokens = estimateProbeTokens(service);
+      const usageTotals = getProbeUsageTotals(service.id);
+      const budgetDecision = decideTokenProbeBudget(
+        {
+          totalEstimatedTokens: usageTotals.totalEstimatedTokens,
+          serviceEstimatedTokens: usageTotals.serviceEstimatedTokens,
+        },
+        service,
+        estimatedTokens,
+        activeIncidentServiceIds.has(service.id),
+        policyConfig
+      );
+
+      if (!budgetDecision.allowed) {
+        const reason = budgetDecision.reason || "token budget exceeded";
+        recordProbeBudgetSkip(service.id, reason);
+        budgetSkipped++;
+        console.log(
+          `  ⏭️ ${service.name.padEnd(40)} ${"skipped".padStart(8)} token budget (${reason})`
+        );
+        results.push({
+          serviceId: service.id,
+          timestamp: new Date().toISOString(),
+          status: "unknown",
+          responseTimeMs: 0,
+          statusCode: null,
+          errorMessage: `Token-heavy probe skipped: ${reason}`,
+        });
+        continue;
+      }
+    }
+
     try {
       const result = await checkService(service);
       results.push(result);
 
       // Store in database
       insertHealthCheck(result);
+
+      if (isTokenMeteredProbe(service) && result.statusCode !== null) {
+        const estimatedTokens = estimateProbeTokens(service);
+        if (estimatedTokens > 0) {
+          recordProbeUsage(service.id, estimatedTokens);
+          cycleEstimatedTokens += estimatedTokens;
+        }
+      }
 
       // Manage auto-incidents (with consecutive failure logic)
       manageIncidents(service.id, service.name, result);
@@ -106,6 +165,12 @@ async function main() {
 
   console.log(`\n${"─".repeat(60)}`);
   console.log(`  SUMMARY: ${operational}✅ ${degraded}⚠️  ${down}🔴 ${unknown}❓  (${duration}ms)`);
+  if (cycleEstimatedTokens > 0 || budgetSkipped > 0) {
+    console.log(
+      `  TOKEN PROBES: +${cycleEstimatedTokens} estimated tokens` +
+      `${budgetSkipped > 0 ? `, ${budgetSkipped} skipped by budget` : ""}`
+    );
+  }
   if (failures.length > 0) console.log(`  NEW FAILURES: ${failures.length}`);
   if (recoveries.length > 0) console.log(`  RECOVERIES: ${recoveries.length}`);
   console.log(`${"─".repeat(60)}\n`);

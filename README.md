@@ -25,6 +25,7 @@ Current capabilities include:
 - assignment workflow for incident tasks
 - Slack and email alerting
 - reminder emails and escalation emails for unresolved failures
+- adaptive token-aware probing (tiered intervals, incident acceleration, daily budgets)
 - nightly SQLite backups on a single droplet
 
 ## How It Works
@@ -32,11 +33,12 @@ Current capabilities include:
 ### Service Monitoring Flow
 
 1. Services are defined in the service config layer.
-2. The scheduler checks each enabled service according to its configured interval.
-3. Results are stored in SQLite.
-4. If failures continue across the configured threshold, an incident is opened.
-5. Alerts, reminders, and escalations are processed from the latest results.
-6. The dashboard reads the latest state from the database and cached event-bus payload.
+2. The scheduler computes adaptive intervals per service (core vs token-metered probes).
+3. Token-metered probes are budget-gated with emergency reserve for active incidents.
+4. Results are stored in SQLite.
+5. If failures continue across the configured threshold, an incident is opened.
+6. Alerts, reminders, and escalations are processed from the latest results.
+7. The dashboard reads the latest state from the database and cached event-bus payload.
 
 ### Main Runtime Pieces
 
@@ -46,8 +48,10 @@ Current capabilities include:
   Performs actual HTTP, keyword, and JSON-path health checks.
 - `src/lib/scheduler.ts`
   Runs checks in-process on a single app instance.
+- `src/lib/probe-policy.ts`
+  Applies tiered probe cadence and token budget policy.
 - `src/lib/database.ts`
-  Stores health checks, incidents, assignments, maintenance windows, and alert state in SQLite.
+  Stores health checks, incidents, assignments, maintenance windows, alert state, and daily token-probe usage in SQLite.
 - `src/lib/alerting.ts`
   Sends Slack/email alerts, reminders, escalations, and assignment emails.
 - `src/lib/event-bus.ts`
@@ -142,6 +146,17 @@ SMTP_PASS=...
 ALERT_EMAIL_FROM=...
 ALERT_EMAIL_TO=...
 # ALERT_ESCALATION_EMAIL_TO=...
+
+# Token-aware probe policy
+MONITOR_TOKEN_PROBE_GENERATION_INTERVAL_SECONDS=900
+MONITOR_TOKEN_PROBE_SYNTHETIC_INTERVAL_SECONDS=1800
+MONITOR_TOKEN_PROBE_INCIDENT_INTERVAL_SECONDS=120
+MONITOR_TOKEN_PROBE_DEPLOYMENT_WINDOW_MINUTES=20
+MONITOR_TOKEN_PROBE_DEPLOYMENT_INTERVAL_SECONDS=300
+MONITOR_TOKEN_BUDGET_ENFORCED=true
+MONITOR_TOKEN_BUDGET_DAILY=200000
+MONITOR_TOKEN_BUDGET_PER_SERVICE_DAILY=60000
+MONITOR_TOKEN_BUDGET_EMERGENCY_DAILY=40000
 
 # Optional off-droplet backups (DigitalOcean Spaces / S3-compatible)
 DATABASE_BACKUP_REMOTE_BUCKET=...

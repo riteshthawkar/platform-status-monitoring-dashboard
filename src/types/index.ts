@@ -13,6 +13,7 @@ export type ServiceCategory =
   | "other";
 
 export type CheckType = "http" | "tcp" | "keyword" | "json_query";
+export type ProbeTier = "core" | "llm_preflight" | "llm_generation" | "llm_synthetic";
 
 export interface ServiceConfig {
   id: string;
@@ -33,6 +34,9 @@ export interface ServiceConfig {
   headers?: Record<string, string>;
   method?: "GET" | "POST" | "HEAD";
   body?: string;
+  // Probe optimization metadata (optional; safe defaults are inferred when omitted).
+  probeTier?: ProbeTier;
+  tokenCostEstimate?: number;
   enabled: boolean;
   tags?: string[];
 }

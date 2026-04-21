@@ -4,8 +4,9 @@
 // ============================================================
 
 import { NextRequest, NextResponse } from "next/server";
-import { getAlertHistory, getAlertStats } from "@/lib/database";
+import { getAlertHistory, getAlertStats, getProbeUsageByService, getProbeUsageSummary } from "@/lib/database";
 import { getAlertConfig } from "@/lib/alerting";
+import { getProbePolicyConfig } from "@/lib/probe-policy";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +21,9 @@ export async function GET(request: NextRequest) {
     const alerts = getAlertHistory(limit, serviceId);
     const stats = getAlertStats();
     const config = getAlertConfig();
+    const probeUsageSummary = getProbeUsageSummary();
+    const probeUsageByService = getProbeUsageByService(undefined, 100);
+    const probePolicy = getProbePolicyConfig();
 
     return NextResponse.json({
       alerts,
@@ -32,6 +36,11 @@ export async function GET(request: NextRequest) {
         byChannel: stats.byChannel,
       },
       config,
+      probeBudget: {
+        policy: probePolicy,
+        usage: probeUsageSummary,
+        services: probeUsageByService,
+      },
     });
   } catch (error) {
     return NextResponse.json(

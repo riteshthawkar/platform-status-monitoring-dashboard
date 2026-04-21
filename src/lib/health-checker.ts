@@ -5,8 +5,24 @@
 
 import { ServiceConfig, ServiceStatus, HealthCheckResult } from "@/types";
 import { getEnabledServices } from "./services-config";
-import { insertHealthCheck, getRecentChecks, createIncident, getActiveIncidents, updateIncident, getActiveMaintenanceWindow } from "./database";
+import {
+  insertHealthCheck,
+  getRecentChecks,
+  createIncident,
+  getActiveIncidents,
+  updateIncident,
+  getActiveMaintenanceWindow,
+  getProbeUsageTotals,
+  recordProbeBudgetSkip,
+  recordProbeUsage,
+} from "./database";
 import { validateJsonResponse } from "./check-validation";
+import {
+  decideTokenProbeBudget,
+  estimateProbeTokens,
+  getProbePolicyConfig,
+  isTokenMeteredProbe,
+} from "./probe-policy";
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 2000;
@@ -199,6 +215,13 @@ export async function checkServiceAndStore(service: ServiceConfig): Promise<Heal
   // Auto-incident management (with consecutive failure check)
   manageAutoIncidents(service, result);
 
+  if (isTokenMeteredProbe(service) && result.statusCode !== null) {
+    const estimatedTokens = estimateProbeTokens(service);
+    if (estimatedTokens > 0) {
+      recordProbeUsage(service.id, estimatedTokens);
+    }
+  }
+
   return result;
 }
 
@@ -247,19 +270,54 @@ function manageAutoIncidents(service: ServiceConfig, check: HealthCheckResult) {
 
 export async function checkAllServices(): Promise<HealthCheckResult[]> {
   const services = getEnabledServices();
-  const results = await Promise.allSettled(services.map((s) => checkServiceAndStore(s)));
+  const policyConfig = getProbePolicyConfig();
+  const activeIncidentServiceIds = new Set(getActiveIncidents().map((incident) => incident.serviceId));
+  const results: HealthCheckResult[] = [];
 
-  return results.map((r, i) => {
-    if (r.status === "fulfilled") {
-      return r.value;
+  for (const service of services) {
+    if (isTokenMeteredProbe(service)) {
+      const estimatedTokens = estimateProbeTokens(service);
+      const usage = getProbeUsageTotals(service.id);
+      const decision = decideTokenProbeBudget(
+        {
+          totalEstimatedTokens: usage.totalEstimatedTokens,
+          serviceEstimatedTokens: usage.serviceEstimatedTokens,
+        },
+        service,
+        estimatedTokens,
+        activeIncidentServiceIds.has(service.id),
+        policyConfig
+      );
+
+      if (!decision.allowed) {
+        const reason = decision.reason || "token budget exceeded";
+        recordProbeBudgetSkip(service.id, reason);
+        results.push({
+          serviceId: service.id,
+          timestamp: new Date().toISOString(),
+          status: "unknown",
+          responseTimeMs: 0,
+          statusCode: null,
+          errorMessage: `Token-heavy probe skipped: ${reason}`,
+        });
+        continue;
+      }
     }
-    return {
-      serviceId: services[i].id,
-      timestamp: new Date().toISOString(),
-      status: "unknown" as ServiceStatus,
-      responseTimeMs: 0,
-      statusCode: null,
-      errorMessage: `Check failed: ${r.reason}`,
-    };
-  });
+
+    try {
+      const result = await checkServiceAndStore(service);
+      results.push(result);
+    } catch (error) {
+      results.push({
+        serviceId: service.id,
+        timestamp: new Date().toISOString(),
+        status: "unknown" as ServiceStatus,
+        responseTimeMs: 0,
+        statusCode: null,
+        errorMessage: `Check failed: ${error}`,
+      });
+    }
+  }
+
+  return results;
 }

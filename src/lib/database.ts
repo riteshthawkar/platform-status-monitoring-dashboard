@@ -137,6 +137,24 @@ function initializeDatabase(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_alert_escalations_updated
       ON alert_escalations(updated_at DESC);
 
+    -- Daily token-usage accounting for token-metered probes
+    CREATE TABLE IF NOT EXISTS probe_usage_daily (
+      service_id TEXT NOT NULL,
+      usage_date TEXT NOT NULL DEFAULT (date('now')),
+      check_count INTEGER NOT NULL DEFAULT 0,
+      estimated_tokens INTEGER NOT NULL DEFAULT 0,
+      blocked_count INTEGER NOT NULL DEFAULT 0,
+      last_blocked_reason TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (service_id, usage_date)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_probe_usage_daily_date
+      ON probe_usage_daily(usage_date DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_probe_usage_daily_tokens
+      ON probe_usage_daily(usage_date DESC, estimated_tokens DESC);
+
     -- Service ownership
     CREATE TABLE IF NOT EXISTS service_owners (
       service_id TEXT PRIMARY KEY,
@@ -923,6 +941,168 @@ export function claimAlertEscalationIfDue(
   });
 
   return tx();
+}
+
+// ─── Probe Budget Usage Queries ────────────────────────────
+
+export interface ProbeUsageServiceRow {
+  serviceId: string;
+  usageDate: string;
+  checkCount: number;
+  estimatedTokens: number;
+  blockedCount: number;
+  lastBlockedReason: string | null;
+  updatedAt: string;
+}
+
+export interface ProbeUsageTotals {
+  usageDate: string;
+  totalEstimatedTokens: number;
+  totalCheckCount: number;
+  totalBlockedCount: number;
+  serviceEstimatedTokens: number;
+  serviceCheckCount: number;
+  serviceBlockedCount: number;
+}
+
+export interface ProbeUsageSummaryRow {
+  usageDate: string;
+  trackedServices: number;
+  totalEstimatedTokens: number;
+  totalChecks: number;
+  totalBlockedChecks: number;
+}
+
+export function recordProbeUsage(serviceId: string, estimatedTokens: number): void {
+  const db = getDb();
+  const safeTokens = Math.max(Math.round(estimatedTokens), 0);
+
+  db.prepare(
+    `INSERT INTO probe_usage_daily (
+       service_id, usage_date, check_count, estimated_tokens, blocked_count, updated_at
+     )
+     VALUES (?, date('now'), 1, ?, 0, datetime('now'))
+     ON CONFLICT(service_id, usage_date) DO UPDATE SET
+       check_count = probe_usage_daily.check_count + 1,
+       estimated_tokens = probe_usage_daily.estimated_tokens + excluded.estimated_tokens,
+       updated_at = datetime('now')`
+  ).run(serviceId, safeTokens);
+}
+
+export function recordProbeBudgetSkip(serviceId: string, reason: string): void {
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO probe_usage_daily (
+       service_id, usage_date, check_count, estimated_tokens, blocked_count, last_blocked_reason, updated_at
+     )
+     VALUES (?, date('now'), 0, 0, 1, ?, datetime('now'))
+     ON CONFLICT(service_id, usage_date) DO UPDATE SET
+       blocked_count = probe_usage_daily.blocked_count + 1,
+       last_blocked_reason = excluded.last_blocked_reason,
+       updated_at = datetime('now')`
+  ).run(serviceId, reason);
+}
+
+export function getProbeUsageTotals(serviceId: string, usageDate?: string): ProbeUsageTotals {
+  const db = getDb();
+  const targetDate = usageDate || new Date().toISOString().slice(0, 10);
+
+  const totals = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(estimated_tokens), 0) AS totalEstimatedTokens,
+         COALESCE(SUM(check_count), 0) AS totalCheckCount,
+         COALESCE(SUM(blocked_count), 0) AS totalBlockedCount
+       FROM probe_usage_daily
+       WHERE usage_date = ?`
+    )
+    .get(targetDate) as {
+    totalEstimatedTokens: number | null;
+    totalCheckCount: number | null;
+    totalBlockedCount: number | null;
+  };
+
+  const serviceTotals = db
+    .prepare(
+      `SELECT
+         COALESCE(estimated_tokens, 0) AS estimatedTokens,
+         COALESCE(check_count, 0) AS checkCount,
+         COALESCE(blocked_count, 0) AS blockedCount
+       FROM probe_usage_daily
+       WHERE usage_date = ?
+         AND service_id = ?
+       LIMIT 1`
+    )
+    .get(targetDate, serviceId) as
+    | {
+        estimatedTokens: number;
+        checkCount: number;
+        blockedCount: number;
+      }
+    | undefined;
+
+  return {
+    usageDate: targetDate,
+    totalEstimatedTokens: totals.totalEstimatedTokens ?? 0,
+    totalCheckCount: totals.totalCheckCount ?? 0,
+    totalBlockedCount: totals.totalBlockedCount ?? 0,
+    serviceEstimatedTokens: serviceTotals?.estimatedTokens ?? 0,
+    serviceCheckCount: serviceTotals?.checkCount ?? 0,
+    serviceBlockedCount: serviceTotals?.blockedCount ?? 0,
+  };
+}
+
+export function getProbeUsageSummary(usageDate?: string): ProbeUsageSummaryRow {
+  const db = getDb();
+  const targetDate = usageDate || new Date().toISOString().slice(0, 10);
+
+  const row = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS trackedServices,
+         COALESCE(SUM(estimated_tokens), 0) AS totalEstimatedTokens,
+         COALESCE(SUM(check_count), 0) AS totalChecks,
+         COALESCE(SUM(blocked_count), 0) AS totalBlockedChecks
+       FROM probe_usage_daily
+       WHERE usage_date = ?`
+    )
+    .get(targetDate) as {
+    trackedServices: number;
+    totalEstimatedTokens: number;
+    totalChecks: number;
+    totalBlockedChecks: number;
+  };
+
+  return {
+    usageDate: targetDate,
+    trackedServices: row.trackedServices,
+    totalEstimatedTokens: row.totalEstimatedTokens,
+    totalChecks: row.totalChecks,
+    totalBlockedChecks: row.totalBlockedChecks,
+  };
+}
+
+export function getProbeUsageByService(usageDate?: string, limit: number = 50): ProbeUsageServiceRow[] {
+  const db = getDb();
+  const targetDate = usageDate || new Date().toISOString().slice(0, 10);
+  const safeLimit = Math.max(1, Math.min(limit, 500));
+
+  return db
+    .prepare(
+      `SELECT
+         service_id AS serviceId,
+         usage_date AS usageDate,
+         check_count AS checkCount,
+         estimated_tokens AS estimatedTokens,
+         blocked_count AS blockedCount,
+         last_blocked_reason AS lastBlockedReason,
+         updated_at AS updatedAt
+       FROM probe_usage_daily
+       WHERE usage_date = ?
+       ORDER BY estimated_tokens DESC, blocked_count DESC, service_id ASC
+       LIMIT ?`
+    )
+    .all(targetDate, safeLimit) as ProbeUsageServiceRow[];
 }
 
 // ─── Service Ownership Queries ──────────────────────────────

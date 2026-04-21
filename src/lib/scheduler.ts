@@ -20,10 +20,22 @@ import {
   cleanOldChecks,
   getUpcomingDeadlines,
   getActiveMaintenanceWindow,
+  getLatestDeployments,
+  getProbeUsageSummary,
+  getProbeUsageTotals,
+  recordProbeBudgetSkip,
+  recordProbeUsage,
 } from "./database";
 import { processAlertsForResults, getAlertConfig, sendAssignmentEmail } from "./alerting";
 import { eventBus } from "./event-bus";
 import { HealthCheckResult, ServiceStatus } from "@/types";
+import {
+  decideTokenProbeBudget,
+  estimateProbeTokens,
+  getAdaptiveIntervalSeconds,
+  getProbePolicyConfig,
+  isTokenMeteredProbe,
+} from "./probe-policy";
 
 const CONSECUTIVE_FAILURES_THRESHOLD = 3;
 
@@ -43,6 +55,12 @@ const consecutiveFailures: Map<string, number> = new Map();
 /** Tracks when deadline reminders were last sent (to avoid spam). */
 const deadlineRemindersSent: Map<string, number> = new Map();
 
+interface DueService {
+  service: ReturnType<typeof getEnabledServices>[number];
+  isCircuitOpen: boolean;
+  estimatedTokens: number;
+}
+
 /**
  * Run a single round of health checks for services whose interval has elapsed.
  * Stores results, manages incidents, and sends alerts.
@@ -60,62 +78,145 @@ async function runHealthCheckCycle(): Promise<void> {
   try {
     const enabledServices = getEnabledServices();
     const now = Date.now();
+    const policyConfig = getProbePolicyConfig();
+    const activeIncidentServiceIds = new Set(
+      getActiveIncidents().map((incident) => incident.serviceId)
+    );
+    const deploymentWindowMs = policyConfig.postDeployWindowMinutes * 60 * 1000;
+    const latestDeployments = getLatestDeployments();
+    const latestDeploymentMsByService = new Map<string, number>();
+    for (const deployment of latestDeployments) {
+      const deployedAtMs = new Date(deployment.deployedAt).getTime();
+      if (Number.isNaN(deployedAtMs)) continue;
+      const existing = latestDeploymentMsByService.get(deployment.serviceId);
+      if (!existing || deployedAtMs > existing) {
+        latestDeploymentMsByService.set(deployment.serviceId, deployedAtMs);
+      }
+    }
 
-    // Filter to only services whose check interval has elapsed.
-    // Circuit breaker: if a service has failed CIRCUIT_BREAKER_THRESHOLD times
-    // consecutively, slow its check interval to 5 minutes to avoid wasting
-    // resources on persistently down services (each timeout = up to 49 seconds).
+    // Filter to only services whose adaptive check interval has elapsed.
+    // For token-metered probes we apply daily budget controls.
     let circuitBroken = 0;
-    const servicesToCheck = enabledServices.filter((service) => {
+    let notYetDue = 0;
+    let budgetSkipped = 0;
+    let emergencyRuns = 0;
+    const servicesToCheck: DueService[] = [];
+
+    for (const service of enabledServices) {
       const lastCheck = lastCheckTimes.get(service.id) || 0;
       const failures = consecutiveFailures.get(service.id) || 0;
+      const hasActiveIncident = activeIncidentServiceIds.has(service.id);
+      const latestDeploymentMs = latestDeploymentMsByService.get(service.id);
+      const hasRecentDeployment = latestDeploymentMs
+        ? now - latestDeploymentMs <= deploymentWindowMs
+        : false;
+      const effectiveIntervalSeconds = getAdaptiveIntervalSeconds(
+        service,
+        {
+          hasActiveIncident,
+          hasRecentDeployment,
+          isCriticalService: !!service.tags?.includes("critical"),
+        },
+        policyConfig
+      );
 
       // Circuit breaker: use slower interval for persistently failing services
-      const isCircuitOpen = failures >= CIRCUIT_BREAKER_THRESHOLD;
+      const isCircuitOpen = failures >= CIRCUIT_BREAKER_THRESHOLD && !hasActiveIncident;
       const intervalMs = isCircuitOpen
-        ? CIRCUIT_BREAKER_INTERVAL_MS
-        : (service.checkIntervalSeconds || 120) * 1000;
+        ? Math.max(CIRCUIT_BREAKER_INTERVAL_MS, effectiveIntervalSeconds * 1000)
+        : effectiveIntervalSeconds * 1000;
 
-      if (isCircuitOpen && (now - lastCheck) < intervalMs) {
-        circuitBroken++;
+      if (now - lastCheck < intervalMs) {
+        if (isCircuitOpen) {
+          circuitBroken++;
+        } else {
+          notYetDue++;
+        }
+        continue;
       }
 
-      return (now - lastCheck) >= intervalMs;
-    });
+      let estimatedTokens = 0;
+      if (isTokenMeteredProbe(service)) {
+        estimatedTokens = estimateProbeTokens(service);
+        const usageTotals = getProbeUsageTotals(service.id);
+        const budgetDecision = decideTokenProbeBudget(
+          {
+            totalEstimatedTokens: usageTotals.totalEstimatedTokens,
+            serviceEstimatedTokens: usageTotals.serviceEstimatedTokens,
+          },
+          service,
+          estimatedTokens,
+          hasActiveIncident,
+          policyConfig
+        );
 
-    const skipped = enabledServices.length - servicesToCheck.length - circuitBroken;
+        if (!budgetDecision.allowed) {
+          budgetSkipped++;
+          recordProbeBudgetSkip(service.id, budgetDecision.reason || "token budget exceeded");
+          // Mark as checked for cadence purposes to avoid hot-looping every 30s.
+          lastCheckTimes.set(service.id, now);
+          continue;
+        }
+
+        if (budgetDecision.usedEmergencyReserve) {
+          emergencyRuns++;
+        }
+      }
+
+      servicesToCheck.push({
+        service,
+        isCircuitOpen,
+        estimatedTokens,
+      });
+    }
 
     console.log(
       `\n[Scheduler] ─── Health check cycle started at ${timestamp} ───`
     );
     console.log(
       `[Scheduler] Checking ${servicesToCheck.length}/${enabledServices.length} services` +
-      ` (${skipped} not yet due${circuitBroken > 0 ? `, ${circuitBroken} circuit-broken` : ""})`
+      ` (${notYetDue} not yet due` +
+      `${circuitBroken > 0 ? `, ${circuitBroken} circuit-broken` : ""}` +
+      `${budgetSkipped > 0 ? `, ${budgetSkipped} budget-limited` : ""})`
     );
+    if (emergencyRuns > 0) {
+      console.log(`[Scheduler] ⚠️  Emergency token reserve used for ${emergencyRuns} incident probe(s)`);
+    }
 
     if (servicesToCheck.length === 0) {
+      if (budgetSkipped > 0) {
+        console.log(`[Scheduler] ─── No checks executed (all due probes blocked by budget) ───\n`);
+      } else {
       console.log(`[Scheduler] ─── No services due, cycle skipped ───\n`);
+      }
       return;
     }
 
     // Capture previous statuses for alert comparison
     const previousStatuses = new Map<string, ServiceStatus>();
-    for (const service of servicesToCheck) {
-      const lastCheck = getLatestCheck(service.id);
+    for (const dueService of servicesToCheck) {
+      const lastCheck = getLatestCheck(dueService.service.id);
       if (lastCheck) {
-        previousStatuses.set(service.id, lastCheck.status);
+        previousStatuses.set(dueService.service.id, lastCheck.status);
       }
     }
 
     // Run checks only for services that are due
     const results: HealthCheckResult[] = [];
-    for (const service of servicesToCheck) {
+    let cycleEstimatedTokens = 0;
+    for (const dueService of servicesToCheck) {
+      const { service, estimatedTokens, isCircuitOpen } = dueService;
       try {
         const result = await checkService(service);
         results.push(result);
 
         // Store in database
         insertHealthCheck(result);
+
+        if (estimatedTokens > 0 && result.statusCode !== null) {
+          recordProbeUsage(service.id, estimatedTokens);
+          cycleEstimatedTokens += estimatedTokens;
+        }
 
         // Update last check time for this service
         lastCheckTimes.set(service.id, Date.now());
@@ -125,7 +226,7 @@ async function runHealthCheckCycle(): Promise<void> {
           const prev = consecutiveFailures.get(service.id) || 0;
           const newCount = prev + 1;
           consecutiveFailures.set(service.id, newCount);
-          if (newCount === CIRCUIT_BREAKER_THRESHOLD) {
+          if (newCount === CIRCUIT_BREAKER_THRESHOLD && !isCircuitOpen) {
             console.log(`[Scheduler] ⚡ CIRCUIT OPEN: ${service.name} — ${newCount} consecutive failures, backing off to 5min intervals`);
           }
         } else {
@@ -167,11 +268,20 @@ async function runHealthCheckCycle(): Promise<void> {
     const degraded = results.filter((r) => r.status === "degraded").length;
     const down = results.filter((r) => r.status === "down").length;
     const duration = Date.now() - startTime;
+    const probeUsageSummary = getProbeUsageSummary();
 
     console.log(
       `[Scheduler] ─── Cycle complete: ${operational}✅ ${degraded}⚠️ ${down}🔴 | ` +
-        `${failures.length} new failures, ${recoveries.length} recoveries | ${duration}ms ───\n`
+        `${failures.length} new failures, ${recoveries.length} recoveries | ${duration}ms ───`
     );
+    if (cycleEstimatedTokens > 0 || budgetSkipped > 0) {
+      console.log(
+        `[Scheduler] Token probes: +${cycleEstimatedTokens} est. tokens this cycle | ` +
+        `today ${probeUsageSummary.totalEstimatedTokens}/${policyConfig.dailyTokenBudget}` +
+        `${budgetSkipped > 0 ? ` | skipped ${budgetSkipped}` : ""}`
+      );
+    }
+    console.log("");
 
     // Clean old records once per cycle (keeps last 90 days)
     cleanOldChecks(90);
@@ -269,6 +379,7 @@ export function startScheduler(): void {
 
   const alertConfig = getAlertConfig();
   const services = getEnabledServices();
+  const policyConfig = getProbePolicyConfig();
 
   // Collect distinct intervals for the startup log
   const intervals = [...new Set(services.map((s) => s.checkIntervalSeconds || 120))].sort(
@@ -280,6 +391,16 @@ export function startScheduler(): void {
   console.log(`[Scheduler] Cron tick: every 30 seconds`);
   console.log(`[Scheduler] Services: ${services.length}`);
   console.log(`[Scheduler] Per-service intervals: ${intervals.map((i) => `${i}s`).join(", ")}`);
+  console.log(
+    `[Scheduler] Token probe policy: generation≥${policyConfig.generationHealthyIntervalSeconds}s, ` +
+    `synthetic≥${policyConfig.syntheticHealthyIntervalSeconds}s, ` +
+    `incident=${policyConfig.incidentTokenIntervalSeconds}s`
+  );
+  console.log(
+    `[Scheduler] Token budgets: daily=${policyConfig.dailyTokenBudget}, ` +
+    `per-service=${policyConfig.perServiceDailyTokenBudget}, ` +
+    `emergency=${policyConfig.emergencyTokenReserve}, enforced=${policyConfig.enforceTokenBudget}`
+  );
   console.log(`[Scheduler] Slack: ${alertConfig.slackConfigured ? "✅" : "❌"}`);
   console.log(`[Scheduler] Email: ${alertConfig.emailConfigured ? "✅" : "❌"}`);
   console.log(`[Scheduler] ═══════════════════════════════════════════════`);
