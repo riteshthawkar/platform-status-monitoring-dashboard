@@ -13,6 +13,7 @@
     "restore:db": "bash src/scripts/restore-database.sh",
     "check": "tsx src/scripts/cron-checker.ts",
     "check:once": "tsx src/scripts/cron-checker.ts",
+    "monitoring:conformance": "tsx src/scripts/monitoring-conformance.ts",
     "add-service": "tsx src/scripts/add-service.ts",
     "setup:cron": "bash src/scripts/setup-cron.sh",
     "deploy:setup": "bash deploy/setup.sh",

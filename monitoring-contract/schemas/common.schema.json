@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lawa.ai/monitoring-contract/schemas/common.schema.json",
+  "title": "Monitoring Contract v1 Common Schema",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "version",
+    "service",
+    "status",
+    "timestamp"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "monitoring-contract/v1"
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "name"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "type": { "type": "string", "minLength": 1 },
+        "environment": { "type": "string", "minLength": 1 }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "healthy",
+        "degraded",
+        "unhealthy",
+        "unknown"
+      ]
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "commitSha": { "type": "string", "minLength": 1 },
+        "deployedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

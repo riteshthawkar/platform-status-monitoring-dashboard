@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lawa.ai/monitoring-contract/schemas/health-live.schema.json",
+  "title": "Monitoring Contract v1 /health/live",
+  "allOf": [
+    { "$ref": "./common.schema.json" }
+  ],
+  "type": "object",
+  "additionalProperties": true
+}

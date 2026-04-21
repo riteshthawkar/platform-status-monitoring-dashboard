@@ -5,7 +5,11 @@
 
 import Database from "better-sqlite3";
 import path from "path";
+import { loadEnvConfig } from "@next/env";
 import { HealthCheckResult, Incident, IncidentUpdate, UptimeBar, TeamMember, IncidentAssignment, AssignmentStatus, ServiceStatus, ServiceOwner, MaintenanceWindow, ServiceDeployment } from "@/types";
+
+// Ensure .env* is loaded when this module is used outside Next runtime (cron/tsx scripts).
+loadEnvConfig(process.cwd());
 
 // Use DATABASE_PATH env var for persistent disk (Render/Railway/Fly.io)
 // Falls back to local ./data/ for development
