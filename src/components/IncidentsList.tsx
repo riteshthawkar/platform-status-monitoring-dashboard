@@ -3,138 +3,97 @@
 import Link from "next/link";
 import { Incident } from "@/types";
 import { AlertCircle, AlertTriangle, Info } from "lucide-react";
+import { cn, foregroundTextClass, mutedText2Class, mutedTextClass, toneChipClasses, toneSurfaceClasses, toneTextClasses } from "@/lib/ui";
 
 interface IncidentsListProps {
   incidents: Incident[];
 }
 
 const severityConfig = {
-  critical: { icon: AlertCircle, color: "var(--color-down)" },
-  major: { icon: AlertTriangle, color: "var(--color-degraded)" },
-  minor: { icon: Info, color: "var(--color-maintenance)" },
+  critical: { icon: AlertCircle, tone: "down" as const },
+  major: { icon: AlertTriangle, tone: "degraded" as const },
+  minor: { icon: Info, tone: "maintenance" as const },
 };
 
-const statusLabels: Record<string, { label: string; color: string }> = {
-  investigating: { label: "Investigating", color: "var(--color-down)" },
-  identified: { label: "Identified", color: "var(--color-degraded)" },
-  monitoring: { label: "Monitoring", color: "var(--color-maintenance)" },
-  resolved: { label: "Resolved", color: "var(--color-operational)" },
+const statusLabels: Record<string, { label: string; tone: "down" | "degraded" | "maintenance" | "operational" }> = {
+  investigating: { label: "Investigating", tone: "down" },
+  identified: { label: "Identified", tone: "degraded" },
+  monitoring: { label: "Monitoring", tone: "maintenance" },
+  resolved: { label: "Resolved", tone: "operational" },
 };
 
 export default function IncidentsList({ incidents }: IncidentsListProps) {
   if (incidents.length === 0) return null;
 
   return (
-    <div>
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="text-[13px] font-semibold flex items-center gap-2" style={{ color: "var(--foreground)" }}>
-          <AlertTriangle className="w-4 h-4" style={{ color: "var(--color-degraded)" }} />
-          Active Incidents
-        </h2>
+    <section className="rounded-2xl border border-[color:var(--border)] bg-[var(--card)] p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className={cn("text-sm font-semibold", foregroundTextClass)}>Active Incidents</h3>
         <span
-          className="text-[11px] px-2 py-1 rounded-full"
-          style={{
-            color: incidents.length > 0 ? "var(--color-degraded)" : "var(--muted)",
-            background: "color-mix(in srgb, var(--color-degraded) 10%, transparent)",
-          }}
+          className={cn(
+            "rounded-md px-2 py-0.5 text-[10px] font-semibold",
+            incidents.length > 0 ? toneChipClasses.degraded : "bg-[var(--surface-glass-soft)] text-[var(--muted)]",
+          )}
         >
           {incidents.length}
         </span>
       </div>
-      <div
-        className="rounded-[22px] overflow-hidden"
-        style={{
-          border: "1px solid var(--border)",
-          background: "color-mix(in srgb, var(--panel) 90%, transparent)",
-          boxShadow: "var(--shadow-soft)",
-        }}
-      >
-        {incidents.map((incident, i) => {
+
+      <div className="space-y-2">
+        {incidents.map((incident) => {
           const severity = severityConfig[incident.severity] || severityConfig.minor;
-          const SeverityIcon = severity.icon;
           const statusInfo = statusLabels[incident.status] || statusLabels.investigating;
+          const SeverityIcon = severity.icon;
           const isAcknowledged = !!incident.acknowledgedAt;
 
           return (
-            <div
+            <Link
               key={incident.id}
-              className="flex items-start gap-3 px-4 py-3"
-              style={{
-                background: "var(--card)",
-                borderBottom: i < incidents.length - 1 ? "1px solid var(--border)" : "none",
-              }}
+              href={`/incidents/${incident.id}`}
+              className="block rounded-xl bg-[var(--surface-glass-soft)] px-3.5 py-3 transition-colors hover:bg-[var(--surface-glass-hover)]"
             >
-              <SeverityIcon className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: severity.color }} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <Link
-                    href={`/incidents/${incident.id}`}
-                    className="text-[13px] font-medium hover:underline"
-                    style={{ color: "var(--foreground)" }}
-                  >
-                    {incident.title}
-                  </Link>
-                  <span
-                    className="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded"
-                    style={{
-                      color: severity.color,
-                      background: `color-mix(in srgb, ${severity.color} 10%, transparent)`,
-                    }}
-                  >
-                    {incident.severity}
-                  </span>
+              <div className="flex items-start gap-3">
+                <div className={cn("mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg", toneSurfaceClasses[severity.tone], toneTextClasses[severity.tone])}>
+                  <SeverityIcon className="h-3.5 w-3.5" />
                 </div>
-                {incident.description && (
-                  <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
-                    {incident.description}
+
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className={cn("truncate text-sm font-medium", foregroundTextClass)}>
+                      {incident.title}
+                    </p>
+                    <span className={cn("rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider", toneChipClasses[severity.tone])}>
+                      {incident.severity}
+                    </span>
+                  </div>
+
+                  {incident.description && (
+                    <p className={cn("mt-1 text-[11px] leading-5", mutedTextClass)}>
+                      {incident.description}
+                    </p>
+                  )}
+
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+                    <span className={cn("rounded-md px-1.5 py-0.5 font-semibold uppercase tracking-wider", toneChipClasses[statusInfo.tone])}>
+                      {statusInfo.label}
+                    </span>
+                    <span className={cn("rounded-md px-1.5 py-0.5", isAcknowledged ? toneChipClasses.operational : toneChipClasses.degraded)}>
+                      {isAcknowledged ? `Ack: ${incident.acknowledgedByName || "team"}` : "Awaiting ack"}
+                    </span>
+                    <span className={cn("rounded-md bg-[var(--surface-glass-soft)] px-1.5 py-0.5", incident.ownerMemberName ? foregroundTextClass : mutedTextClass)}>
+                      {incident.ownerMemberName ? `On-call: ${incident.ownerMemberName}` : "Unassigned"}
+                    </span>
+                  </div>
+
+                  <p className={cn("mt-2 text-[10px]", mutedText2Class)}>
+                    Started {new Date(incident.createdAt).toLocaleString()}
                   </p>
-                )}
-                <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                  <span
-                    className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
-                    style={{
-                      color: isAcknowledged ? "var(--color-operational)" : "var(--color-degraded)",
-                      background: isAcknowledged
-                        ? "color-mix(in srgb, var(--color-operational) 10%, transparent)"
-                        : "color-mix(in srgb, var(--color-degraded) 10%, transparent)",
-                    }}
-                  >
-                    {isAcknowledged
-                      ? `Acknowledged by ${incident.acknowledgedByName || "team member"}`
-                      : "Awaiting acknowledgement"}
-                  </span>
-                  <span
-                    className="text-[10px] font-medium px-1.5 py-0.5 rounded-full"
-                    style={{
-                      color: incident.ownerMemberName ? "var(--foreground)" : "var(--muted)",
-                      background: "var(--background-secondary)",
-                    }}
-                  >
-                    {incident.ownerMemberName ? `On-call: ${incident.ownerMemberName}` : "On-call unassigned"}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 mt-1.5 text-[11px]" style={{ color: "var(--muted-2)" }}>
-                  <span style={{ color: statusInfo.color }} className="font-medium">{statusInfo.label}</span>
-                  <span>&middot;</span>
-                  <span>Started {new Date(incident.createdAt).toLocaleString()}</span>
-                  {incident.acknowledgedAt && (
-                    <>
-                      <span>&middot;</span>
-                      <span>Acknowledged {new Date(incident.acknowledgedAt).toLocaleString()}</span>
-                    </>
-                  )}
-                  {incident.resolvedAt && (
-                    <>
-                      <span>&middot;</span>
-                      <span>Resolved {new Date(incident.resolvedAt).toLocaleString()}</span>
-                    </>
-                  )}
                 </div>
               </div>
-            </div>
+            </Link>
           );
         })}
       </div>
-    </div>
+    </section>
   );
 }

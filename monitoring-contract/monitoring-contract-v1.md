@@ -165,7 +165,9 @@ A service is contract-conformant when:
 3. status values use only contract taxonomy,
 4. timestamps are valid ISO timestamps,
 5. detailed endpoint has at least one check,
-6. journey endpoint is implemented for journey-critical services.
+6. journey endpoint is implemented for journey-critical services,
+7. critical endpoint status/HTTP semantics are coherent (`unhealthy` should not
+   be returned with `200` on `/health/ready` or `/health/journey`).
 
 Profiles:
 - `generic`: requires live + ready + detailed
@@ -182,3 +184,11 @@ Recommended rollout for existing services:
 4. promote conformance to required check,
 5. remove legacy endpoint assumptions from monitors.
 
+## Robustness Recommendations
+
+To improve smallest-failure detection:
+- keep timestamp freshness under a strict max age (for example 300 seconds),
+- define endpoint-specific latency budgets,
+- use retries in conformance checks to reduce transient false negatives,
+- run probes from more than one region for critical services,
+- combine contract endpoints with synthetic user journeys and metrics/traces.

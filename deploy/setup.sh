@@ -66,7 +66,7 @@ log "System updated"
 # ─── Step 2: Install essential packages ──────────────────────
 info "Installing essential packages..."
 apt-get install -y -qq \
-  curl wget git build-essential python3 sqlite3 \
+  curl wget git build-essential python3 sqlite3 awscli \
   nginx certbot python3-certbot-nginx \
   ufw htop
 log "Essential packages installed"
@@ -216,9 +216,9 @@ log "Nginx configured and running"
 
 # ─── Step 13: Configure firewall ────────────────────────────
 info "Configuring UFW firewall..."
-ufw --force enable
 ufw allow OpenSSH
 ufw allow 'Nginx Full'
+ufw --force enable
 ufw --force reload
 log "Firewall configured (SSH + HTTP/HTTPS)"
 
@@ -245,12 +245,13 @@ echo ""
 echo "  1. Configure alerts:"
 echo "     nano ${APP_DIR}/.env.local"
 echo "     # Add DASHBOARD_USERNAME, DASHBOARD_PASSWORD, SLACK_WEBHOOK_URL, SMTP_* settings"
+echo "     # Optional: configure remote backup upload via DATABASE_BACKUP_REMOTE_* and AWS_* vars"
 echo "     su - ${APP_USER} -c 'cd ${APP_DIR} && pm2 restart all'"
 echo ""
 echo "  2. Add SSL (requires a domain name):"
 echo "     # Point your domain DNS to ${DROPLET_IP}"
 echo "     # Then run:"
-echo "     certbot --nginx -d status.yourdomain.com"
+echo "     bash ${APP_DIR}/deploy/setup-ssl.sh status.yourdomain.com"
 echo ""
 echo "  3. Deploy updates:"
 echo "     su - ${APP_USER} -c 'cd ${APP_DIR} && bash deploy/update.sh'"

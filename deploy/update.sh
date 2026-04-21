@@ -28,11 +28,23 @@ if [ -f ".env.local" ]; then
   DATABASE_BACKUP_DIR_VALUE=$(grep -E '^DATABASE_BACKUP_DIR=' .env.local | tail -n 1 | cut -d '=' -f 2- | tr -d '[:space:]' || true)
 fi
 
+DEFAULT_DATABASE_PATH="$(pwd)/data/status.db"
+EFFECTIVE_DATABASE_PATH="${DATABASE_PATH_VALUE:-$DEFAULT_DATABASE_PATH}"
+
 echo ""
 echo "═══════════════════════════════════"
 echo "  Updating Status Dashboard..."
 echo "═══════════════════════════════════"
 echo ""
+
+# Take a point-in-time snapshot before changing code on disk.
+if [ -f "${EFFECTIVE_DATABASE_PATH}" ]; then
+  info "Creating pre-update SQLite snapshot..."
+  bash src/scripts/backup-database.sh --label pre-update
+  log "Pre-update SQLite snapshot created"
+else
+  info "No SQLite database found at ${EFFECTIVE_DATABASE_PATH}; skipping pre-update snapshot"
+fi
 
 # Pull latest code
 info "Pulling latest changes..."

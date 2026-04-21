@@ -86,8 +86,20 @@ What this gives you:
 npm run monitoring:conformance -- \
   --base-url https://service.example.com \
   --profile rag \
-  --require-healthy false
+  --require-healthy false \
+  --retries 2 \
+  --max-latency-ms 2000 \
+  --max-age-seconds 300 \
+  --probe-mode true \
+  --output-json ./monitoring-conformance-report.json
 ```
+
+Useful optional flags:
+- `--auth-bearer-token <token>`
+- `--auth-header-name X-Internal-Key --auth-header-value <value>`
+- `--require-release true`
+- `--enforce-latency true`
+- `--endpoints /health/live,/health/ready,/health/detailed`
 
 ## Single-Droplet Deployment Model
 

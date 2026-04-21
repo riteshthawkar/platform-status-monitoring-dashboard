@@ -19,6 +19,7 @@ fi
 
 DOMAIN="$1"
 APP_NAME="status-dashboard"
+SITE_FILE="/etc/nginx/sites-available/${APP_NAME}"
 
 echo ""
 echo "═══════════════════════════════════"
@@ -26,12 +27,22 @@ echo "  Setting up SSL for: ${DOMAIN}"
 echo "═══════════════════════════════════"
 echo ""
 
+if [ ! -f "${SITE_FILE}" ]; then
+  echo "Nginx site file not found: ${SITE_FILE}"
+  exit 1
+fi
+
 # Update Nginx config with the domain
-sed -i "s/server_name _;/server_name ${DOMAIN};/" /etc/nginx/sites-available/${APP_NAME}
+sed -i -E "s/server_name[[:space:]]+[^;]+;/server_name ${DOMAIN};/g" "${SITE_FILE}"
 nginx -t && systemctl reload nginx
 
-# Get SSL certificate
-certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos --redirect --email admin@${DOMAIN#*.}
+# Get or install SSL certificate
+if certbot certificates 2>/dev/null | grep -q "Certificate Name: ${DOMAIN}$"; then
+  echo "Existing certificate found. Installing it into Nginx..."
+  certbot install --cert-name "${DOMAIN}" --nginx --non-interactive
+else
+  certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos --redirect --email admin@${DOMAIN#*.}
+fi
 
 # Verify auto-renewal
 certbot renew --dry-run
